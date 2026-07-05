@@ -273,6 +273,11 @@ Les prochaines étapes, par ordre de priorité :
 
 ## Déploiement
 
+Guide pas-à-pas sur un VPS :
+[docs/deploiement-scaleway.md](docs/deploiement-scaleway.md) (ports à
+ouvrir, Docker ou systemd, TLS avec Caddy, vérification direct/relayé,
+dépannage).
+
 - **systemd** : unités prêtes à l'emploi dans `deploy/systemd/`
   (`omni-server.service` tourne sous un utilisateur dynamique non
   privilégié avec durcissement ; `omnid.service` nécessite root pour le
