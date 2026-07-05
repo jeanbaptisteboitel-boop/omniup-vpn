@@ -66,8 +66,11 @@ export OMNIUP_ADMIN_KEY=omadmin-…
 (`--reusable` permet d'enrôler plusieurs machines avec la même clé ;
 sans ce drapeau la clé est à usage unique.)
 
-Ouvrez aussi le port UDP 3478 (STUN) vers le serveur — modifiable avec
-`--stun-addr`, désactivable avec `--stun-addr off`.
+Ouvrez aussi les ports UDP 3478 (STUN, `--stun-addr`) et 3479 (relais de
+secours, `--relay-addr`) vers le serveur — chacun désactivable avec `off`.
+La plage d'adresses du réseau se choisit au premier démarrage :
+`--cidr 100.64.0.0/16` par exemple (jusqu'à `/10` ; figée ensuite dans
+l'état, en changer implique de ré-enrôler les machines).
 
 ### 4. Connecter chaque machine
 
@@ -113,10 +116,16 @@ ping 100.64.0.2                          # trafic chiffré direct via WireGuard
    pairs le faisant simultanément, les chemins se percent. Le premier pong
    reçu désigne le chemin fonctionnel, appliqué comme endpoint du pair
    (les machines d'un même LAN se trouvent ainsi en direct, sans détour).
-5. **Trafic** — `AllowedIPs = <ip>/32` par pair, keepalive 25 s. Le trafic
-   circule **directement** entre machines, chiffré de bout en bout — le
-   serveur de coordination n'y a jamais accès (il ne connaît que les clés
-   publiques) ; les sondes disco ne transportent aucune donnée.
+5. **Relais de secours** — si le perçage n'aboutit pas (NAT symétrique des
+   deux côtés), le pair bascule sur un endpoint `relay:<clé>` : ses paquets
+   WireGuard transitent, toujours chiffrés, par le relais UDP du serveur
+   (équivalent DERP). Les sondes directes continuent en arrière-plan : dès
+   qu'un chemin direct répond, le pair sort du relais automatiquement.
+6. **Trafic** — `AllowedIPs = <ip>/32` par pair, keepalive 25 s. Le trafic
+   circule **directement** entre machines dès que possible, chiffré de bout
+   en bout — ni le serveur de coordination ni le relais ne peuvent le
+   déchiffrer (ils ne connaissent que les clés publiques) ; les sondes
+   disco ne transportent aucune donnée.
 
 L'interface expose la socket UAPI standard (`/var/run/wireguard/omni0.sock`) :
 `wg show omni0` et `omnid status` fonctionnent tous les deux.
@@ -129,6 +138,7 @@ L'interface expose la socket UAPI standard (`/var/run/wireguard/omni0.sock`) :
 | `POST` | `/api/v1/poll` | `Bearer` jeton machine | Heartbeat + carte du réseau (filtrée par les ACLs) |
 | `POST` | `/api/v1/authkeys` | `Bearer` clé admin | Crée une clé d'enrôlement (`?reusable=true`) |
 | `GET` | `/api/v1/devices` | `Bearer` clé admin | Liste des machines |
+| `DELETE` | `/api/v1/devices/{cible}` | `Bearer` clé admin | Révoque une machine (IP, nom ou id) |
 | `GET` | `/api/v1/acl` | `Bearer` clé admin | Politique d'accès courante |
 | `PUT` | `/api/v1/acl` | `Bearer` clé admin | Remplace la politique d'accès |
 | `GET` | `/healthz` | — | Sonde de vie |
@@ -204,10 +214,14 @@ Les prochaines étapes, par ordre de priorité :
 - [x] **Traversée NAT** : découverte d'endpoint par STUN sur la socket
       WireGuard, candidats multiples (public + LAN), perçage UDP par sondes
       disco (reste hors de portée : le NAT symétrique des deux côtés)
-- [ ] **Relais** type DERP pour les paires de machines qui ne peuvent pas
-      établir de connexion directe (NAT symétrique des deux côtés)
-- [ ] Élargir l'IPAM à `100.64.0.0/10`, expiration des clés, révocation de
-      machines, rotation des jetons
+- [x] **Relais de secours** type DERP (UDP, embarqué dans omni-server) avec
+      bascule automatique et retour au direct dès qu'un chemin perce
+- [x] **IPAM configurable** (`--cidr`, jusqu'à `100.64.0.0/10`) et
+      **révocation de machines** (`omni-server revoke`)
+- [ ] Enregistrement authentifié auprès du relais (aujourd'hui : un tiers
+      connaissant une clé publique peut détourner ses trames relayées —
+      sans pouvoir les déchiffrer ; l'impact se limite à un déni de service)
+- [ ] Expiration des clés d'enrôlement, rotation des jetons
 - [ ] Support macOS/Windows (le moteur userspace rend le portage possible ;
       il reste l'adressage et les routes par plateforme)
 - [ ] SSO/OIDC pour l'enrôlement à la place des clés pré-partagées
@@ -228,7 +242,8 @@ internal/types/     structures de l'API agent ↔ serveur
 internal/control/   serveur : store persistant, IPAM, handlers HTTP
 internal/agent/     agent : client API, identité, candidats, perçage NAT
 internal/dnssrv/    DNS interne (<machine>.omni)
-internal/omnisock/  socket magique : conn.Bind partagé WireGuard/STUN/disco
+internal/omnisock/  socket magique : conn.Bind partagé WireGuard/STUN/disco/relais
+internal/relay/     relais de secours (équivalent DERP, UDP)
 internal/stun/      STUN minimal (RFC 5389, Binding + XOR-MAPPED-ADDRESS)
 internal/wgnet/     moteur WireGuard userspace (TUN, UAPI, netlink)
 ```

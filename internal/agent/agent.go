@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -38,6 +39,7 @@ type Options struct {
 	MTU         int
 	StatePath   string
 	STUNServers []string // vide : déduit du serveur de coordination
+	RelayServer string   // vide : déduit du serveur de coordination ; "off" : désactivé
 	DNS         bool     // activer le DNS interne sur l'adresse overlay
 	DNSZone     string   // zone interne, ex: "omni"
 }
@@ -116,6 +118,24 @@ func Up(ctx context.Context, opts Options) error {
 		}
 	}
 
+	// Relais de secours : configuré sur la socket, utilisé par le
+	// gestionnaire d'endpoints quand le perçage direct échoue.
+	relayServer := opts.RelayServer
+	if relayServer == "" {
+		relayServer = DefaultRelayServer(st.ServerURL)
+	}
+	relayEnabled := false
+	if relayServer != "" && relayServer != "off" {
+		if udpAddr, err := net.ResolveUDPAddr("udp4", relayServer); err == nil {
+			ap := udpAddr.AddrPort()
+			bind.ConfigureRelay(netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), [32]byte(priv.PublicKey()))
+			relayEnabled = true
+			log.Printf("relais de secours: %s", relayServer)
+		} else {
+			log.Printf("relais de secours indisponible (%v)", err)
+		}
+	}
+
 	// DNS interne : résout <machine>.<zone> vers les adresses overlay.
 	var dnsSrv *dnssrv.Server
 	if opts.DNS {
@@ -136,6 +156,14 @@ func Up(ctx context.Context, opts Options) error {
 	var lastSTUN time.Time
 
 	sync := func() {
+		// 0. Maintien de l'enregistrement auprès du relais de secours.
+		if relayEnabled {
+			if err := bind.RelayRegister(); err != nil {
+				log.Printf("relais: %v", err)
+			}
+			mgr.SetRelayAvailable(bind.RelayHealthy())
+		}
+
 		// 1. Redécouverte périodique de notre endpoint public (STUN).
 		if time.Since(lastSTUN) > stunRefresh {
 			if eps := DiscoverEndpoints(ctx, bind, stunServers, dev.Name); len(eps) > 0 {

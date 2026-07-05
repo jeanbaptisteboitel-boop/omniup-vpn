@@ -174,6 +174,12 @@ func (d *Device) SyncPeers(peers []types.Peer, known map[string]bool, initialEnd
 
 // SetPeerEndpoint force l'endpoint d'un pair (résultat du perçage NAT).
 func (d *Device) SetPeerEndpoint(publicKey string, ep netip.AddrPort) error {
+	return d.SetPeerEndpointString(publicKey, ep.String())
+}
+
+// SetPeerEndpointString force l'endpoint d'un pair sous forme textuelle —
+// "ip:port" ou "relay:<clé>" (bascule sur le relais de secours).
+func (d *Device) SetPeerEndpointString(publicKey, ep string) error {
 	key, err := wgtypes.ParseKey(publicKey)
 	if err != nil {
 		return err

@@ -38,6 +38,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/poll", s.requireDevice(s.handlePoll))
 	mux.HandleFunc("POST /api/v1/authkeys", s.requireAdmin(s.handleCreateAuthKey))
 	mux.HandleFunc("GET /api/v1/devices", s.requireAdmin(s.handleListDevices))
+	mux.HandleFunc("DELETE /api/v1/devices/{target}", s.requireAdmin(s.handleRevokeDevice))
 	mux.HandleFunc("GET /api/v1/acl", s.requireAdmin(s.handleGetACL))
 	mux.HandleFunc("PUT /api/v1/acl", s.requireAdmin(s.handleSetACL))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -76,7 +77,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		DeviceID:    d.ID,
 		DeviceToken: d.Token,
 		IP:          d.IP,
-		CIDR:        NetworkCIDR,
+		CIDR:        s.store.CIDR(),
 	})
 }
 
@@ -139,6 +140,16 @@ func (s *Server) handleListDevices(w http.ResponseWriter, _ *http.Request) {
 		peers = append(peers, peerView(d, now))
 	}
 	writeJSON(w, http.StatusOK, peers)
+}
+
+func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {
+	d, err := s.store.RemoveDevice(r.PathValue("target"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	log.Printf("machine révoquée: %s (%s)", d.Hostname, d.IP)
+	writeJSON(w, http.StatusOK, peerView(*d, time.Now()))
 }
 
 func (s *Server) handleGetACL(w http.ResponseWriter, _ *http.Request) {

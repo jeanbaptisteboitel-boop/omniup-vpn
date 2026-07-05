@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/omnisock"
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/relay"
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/types"
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/wgnet"
 )
@@ -25,13 +26,21 @@ const handshakeFresh = 135 * time.Second
 // premier chemin qui répond. L'envoi des sondes ouvre au passage notre
 // mapping NAT vers chaque candidat — les deux pairs le faisant
 // simultanément, c'est le perçage UDP.
+// relayAfterRounds : nombre de cycles sans handshake avant de basculer un
+// pair sur le relais de secours (les sondes directes continuent ensuite,
+// et le premier pong ramène le pair en direct).
+const relayAfterRounds = 2
+
 type EndpointManager struct {
 	dev  *wgnet.Device
 	bind *omnisock.Bind
 
-	mu      sync.Mutex
-	pending map[omnisock.DiscoTxID]pendingProbe
-	peers   map[string][]string // clé publique -> candidats connus
+	mu           sync.Mutex
+	pending      map[omnisock.DiscoTxID]pendingProbe
+	peers        map[string][]string // clé publique -> candidats connus
+	relayOK      bool
+	disconnected map[string]int  // cycles consécutifs sans handshake
+	onRelay      map[string]bool // pairs actuellement joints via le relais
 }
 
 type pendingProbe struct {
@@ -42,13 +51,22 @@ type pendingProbe struct {
 
 func NewEndpointManager(dev *wgnet.Device, bind *omnisock.Bind) *EndpointManager {
 	m := &EndpointManager{
-		dev:     dev,
-		bind:    bind,
-		pending: map[omnisock.DiscoTxID]pendingProbe{},
-		peers:   map[string][]string{},
+		dev:          dev,
+		bind:         bind,
+		pending:      map[omnisock.DiscoTxID]pendingProbe{},
+		peers:        map[string][]string{},
+		disconnected: map[string]int{},
+		onRelay:      map[string]bool{},
 	}
 	bind.SetPongHandler(m.onPong)
 	return m
+}
+
+// SetRelayAvailable signale si le relais de secours répond actuellement.
+func (m *EndpointManager) SetRelayAvailable(ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.relayOK = ok
 }
 
 // Observe met à jour les candidats connus depuis la carte du réseau.
@@ -58,6 +76,17 @@ func (m *EndpointManager) Observe(peers []types.Peer) {
 	m.peers = map[string][]string{}
 	for _, p := range peers {
 		m.peers[p.PublicKey] = candidatesOf(p)
+	}
+	// Oubli des pairs retirés de la carte.
+	for pub := range m.disconnected {
+		if _, ok := m.peers[pub]; !ok {
+			delete(m.disconnected, pub)
+		}
+	}
+	for pub := range m.onRelay {
+		if _, ok := m.peers[pub]; !ok {
+			delete(m.onRelay, pub)
+		}
 	}
 }
 
@@ -82,10 +111,26 @@ func (m *EndpointManager) Probe() {
 		ap  netip.AddrPort
 	}
 	var toSend []probe
+	var toRelay []string
 	for pub, candidates := range m.peers {
+		fresh := false
 		if hs, ok := handshakes[pub]; ok && time.Since(hs) < handshakeFresh {
-			continue // chemin actif : ne pas perturber
+			fresh = true
 		}
+		if fresh && !m.onRelay[pub] {
+			m.disconnected[pub] = 0
+			continue // chemin direct actif : ne pas perturber
+		}
+		if !fresh {
+			m.disconnected[pub]++
+			// Le perçage n'aboutit pas : bascule sur le relais de secours.
+			if m.relayOK && !m.onRelay[pub] && m.disconnected[pub] > relayAfterRounds {
+				toRelay = append(toRelay, pub)
+				m.onRelay[pub] = true
+			}
+		}
+		// Même via le relais, on continue de sonder les chemins directs :
+		// le premier pong ramènera le pair en direct.
 		for _, c := range candidates {
 			if ap, err := netip.ParseAddrPort(c); err == nil {
 				toSend = append(toSend, probe{pub, ap})
@@ -93,6 +138,17 @@ func (m *EndpointManager) Probe() {
 		}
 	}
 	m.mu.Unlock()
+
+	for _, pub := range toRelay {
+		if err := m.dev.SetPeerEndpointString(pub, relay.EndpointString(pub)); err != nil {
+			log.Printf("relais: bascule de %s: %v", shortKey(pub), err)
+			m.mu.Lock()
+			delete(m.onRelay, pub)
+			m.mu.Unlock()
+			continue
+		}
+		log.Printf("pair %s injoignable en direct : bascule sur le relais", shortKey(pub))
+	}
 
 	for _, p := range toSend {
 		id, err := m.bind.SendPing(p.ap)
@@ -105,22 +161,26 @@ func (m *EndpointManager) Probe() {
 	}
 }
 
-// onPong applique le premier chemin confirmé d'un pair encore déconnecté.
+// onPong applique le premier chemin direct confirmé : pour un pair
+// déconnecté, ou pour un pair actuellement relayé (retour au direct).
 func (m *EndpointManager) onPong(id omnisock.DiscoTxID, from netip.AddrPort) {
 	m.mu.Lock()
 	pr, ok := m.pending[id]
 	if ok {
 		delete(m.pending, id)
 	}
+	viaRelay := ok && m.onRelay[pr.publicKey]
 	m.mu.Unlock()
 	if !ok {
 		return
 	}
 
-	handshakes, err := m.dev.PeerHandshakes()
-	if err == nil {
-		if hs, ok := handshakes[pr.publicKey]; ok && time.Since(hs) < handshakeFresh {
-			return // déjà connecté entre-temps : ne pas déstabiliser
+	if !viaRelay {
+		handshakes, err := m.dev.PeerHandshakes()
+		if err == nil {
+			if hs, ok := handshakes[pr.publicKey]; ok && time.Since(hs) < handshakeFresh {
+				return // déjà connecté en direct : ne pas déstabiliser
+			}
 		}
 	}
 	// Le pong peut revenir d'une adresse différente du candidat sondé
@@ -129,7 +189,15 @@ func (m *EndpointManager) onPong(id omnisock.DiscoTxID, from netip.AddrPort) {
 		log.Printf("perçage: endpoint %s: %v", from, err)
 		return
 	}
-	log.Printf("perçage réussi vers %s via %s", shortKey(pr.publicKey), from)
+	m.mu.Lock()
+	delete(m.onRelay, pr.publicKey)
+	m.disconnected[pr.publicKey] = 0
+	m.mu.Unlock()
+	if viaRelay {
+		log.Printf("chemin direct retrouvé vers %s via %s (sortie du relais)", shortKey(pr.publicKey), from)
+	} else {
+		log.Printf("perçage réussi vers %s via %s", shortKey(pr.publicKey), from)
+	}
 }
 
 // candidatesOf ordonne les candidats d'un pair : endpoints rapportés par
@@ -219,11 +287,21 @@ func inOverlay(ip net.IP) bool {
 // DefaultSTUNServer déduit le serveur STUN du serveur de coordination
 // (même hôte, port 3478).
 func DefaultSTUNServer(serverURL string) string {
+	return hostWithPort(serverURL, "3478")
+}
+
+// DefaultRelayServer déduit le relais de secours du serveur de
+// coordination (même hôte, port 3479).
+func DefaultRelayServer(serverURL string) string {
+	return hostWithPort(serverURL, "3479")
+}
+
+func hostWithPort(serverURL, port string) string {
 	u, err := url.Parse(serverURL)
 	if err != nil || u.Hostname() == "" {
 		return ""
 	}
-	return net.JoinHostPort(u.Hostname(), "3478")
+	return net.JoinHostPort(u.Hostname(), port)
 }
 
 func dedup(in []string) []string {

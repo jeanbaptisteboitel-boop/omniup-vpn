@@ -159,6 +159,95 @@ func TestAdminAuthRequired(t *testing.T) {
 	}
 }
 
+func TestRevokeDevice(t *testing.T) {
+	ts, store := newTestServer(t)
+
+	var keyResp types.AuthKeyResponse
+	doJSON(t, "POST", ts.URL+"/api/v1/authkeys?reusable=true", store.AdminKey(), nil, &keyResp)
+
+	var alpha, beta types.RegisterResponse
+	doJSON(t, "POST", ts.URL+"/api/v1/register", "", types.RegisterRequest{
+		AuthKey: keyResp.Key, Hostname: "alpha", PublicKey: genPubKey(t),
+	}, &alpha)
+	doJSON(t, "POST", ts.URL+"/api/v1/register", "", types.RegisterRequest{
+		AuthKey: keyResp.Key, Hostname: "beta", PublicKey: genPubKey(t),
+	}, &beta)
+
+	// Révocation par nom.
+	resp := doJSON(t, "DELETE", ts.URL+"/api/v1/devices/beta", store.AdminKey(), nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("révocation: HTTP %d", resp.StatusCode)
+	}
+
+	// Le jeton de beta ne vaut plus rien.
+	resp = doJSON(t, "POST", ts.URL+"/api/v1/poll", beta.DeviceToken, types.PollRequest{ListenPort: 1}, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("le jeton révoqué devrait être refusé: HTTP %d", resp.StatusCode)
+	}
+
+	// alpha ne voit plus beta.
+	var nm types.NetMap
+	doJSON(t, "POST", ts.URL+"/api/v1/poll", alpha.DeviceToken, types.PollRequest{ListenPort: 1}, &nm)
+	if len(nm.Peers) != 0 {
+		t.Fatalf("beta devrait avoir disparu de la carte: %+v", nm.Peers)
+	}
+
+	// Cible inconnue : 404.
+	resp = doJSON(t, "DELETE", ts.URL+"/api/v1/devices/fantome", store.AdminKey(), nil, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("attendu 404, obtenu %d", resp.StatusCode)
+	}
+}
+
+func TestCustomCIDR(t *testing.T) {
+	store, _, err := OpenStoreCIDR(filepath.Join(t.TempDir(), "state.json"), "10.42.0.0/30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := store.CreateAuthKey(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// /30 : deux hôtes utilisables (10.42.0.1 et 10.42.0.2).
+	d1, err := store.RegisterDevice(key.Key, "un", genPubKey(t))
+	if err != nil || d1.IP != "10.42.0.1" {
+		t.Fatalf("première allocation: %v, %v", d1, err)
+	}
+	d2, err := store.RegisterDevice(key.Key, "deux", genPubKey(t))
+	if err != nil || d2.IP != "10.42.0.2" {
+		t.Fatalf("deuxième allocation: %v, %v", d2, err)
+	}
+	if _, err := store.RegisterDevice(key.Key, "trois", genPubKey(t)); err == nil {
+		t.Fatal("la plage /30 devrait être épuisée (réseau et broadcast exclus)")
+	}
+	// Une adresse libérée par révocation est réattribuable.
+	if _, err := store.RemoveDevice("10.42.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	d4, err := store.RegisterDevice(key.Key, "quatre", genPubKey(t))
+	if err != nil || d4.IP != "10.42.0.1" {
+		t.Fatalf("réallocation après révocation: %v, %v", d4, err)
+	}
+}
+
+func TestCIDRIsSticky(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if _, _, err := OpenStoreCIDR(path, "10.42.0.0/24"); err != nil {
+		t.Fatal(err)
+	}
+	// Réouverture avec une autre plage : celle de l'état fait foi.
+	store, _, err := OpenStoreCIDR(path, "192.168.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.CIDR() != "10.42.0.0/24" {
+		t.Fatalf("la plage devrait être figée: %s", store.CIDR())
+	}
+	if _, _, err := OpenStoreCIDR(path, "pas-un-cidr"); err == nil {
+		t.Fatal("cidr invalide accepté")
+	}
+}
+
 func TestStorePersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	store, created, err := OpenStore(path)

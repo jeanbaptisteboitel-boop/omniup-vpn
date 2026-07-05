@@ -25,7 +25,7 @@ const usage = `omnid — agent OmniUp VPN
 
 Usage :
   omnid up     --server URL --auth-key CLÉ [--hostname NOM] [--iface omni0] [--port 41641]
-               [--mtu 1280] [--stun hôte:3478,...] [--dns=true] [--dns-zone omni]
+               [--mtu 1280] [--stun hôte:3478,...] [--relay hôte:3479] [--dns=true] [--dns-zone omni]
   omnid status
   omnid down
 
@@ -73,6 +73,7 @@ func cmdUp(args []string) error {
 	port := fs.Int("port", 41641, "port d'écoute UDP WireGuard")
 	mtu := fs.Int("mtu", wgnet.DefaultMTU, "MTU de l'interface")
 	stunList := fs.String("stun", "", "serveurs STUN hôte:port séparés par des virgules (défaut : serveur de coordination, port 3478)")
+	relaySrv := fs.String("relay", "", "relais de secours hôte:port (défaut : serveur de coordination, port 3479 ; \"off\" pour désactiver)")
 	statePath := fs.String("state", defaultStatePath(), "fichier d'identité de la machine")
 	dnsOn := fs.Bool("dns", true, "activer le DNS interne sur l'adresse overlay")
 	dnsZone := fs.String("dns-zone", "omni", "zone du DNS interne (<machine>.<zone>)")
@@ -99,6 +100,7 @@ func cmdUp(args []string) error {
 		MTU:         *mtu,
 		StatePath:   *statePath,
 		STUNServers: stunServers,
+		RelayServer: *relaySrv,
 		DNS:         *dnsOn,
 		DNSZone:     *dnsZone,
 	})

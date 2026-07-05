@@ -14,11 +14,13 @@ import (
 	"log"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"text/tabwriter"
 	"time"
 
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/control"
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/relay"
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/stun"
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/types"
 )
@@ -26,9 +28,11 @@ import (
 const usage = `omni-server — serveur de coordination OmniUp VPN
 
 Usage :
-  omni-server serve   [--addr :8080] [--state ./omni-server.json] [--tls-cert PEM --tls-key PEM]
+  omni-server serve   [--addr :8080] [--state ./omni-server.json] [--cidr 100.64.0.0/24]
+                      [--tls-cert PEM --tls-key PEM] [--stun-addr :3478] [--relay-addr :3479]
   omni-server genkey  [--server URL] [--admin-key CLÉ] [--reusable]
   omni-server devices [--server URL] [--admin-key CLÉ]
+  omni-server revoke  [--server URL] [--admin-key CLÉ] MACHINE (ip, nom ou id)
   omni-server acl     [--server URL] [--admin-key CLÉ] [--set politique.json]
 
 La clé admin est affichée au premier démarrage du serveur ; elle peut aussi
@@ -49,6 +53,8 @@ func main() {
 		err = cmdGenkey(os.Args[2:])
 	case "devices":
 		err = cmdDevices(os.Args[2:])
+	case "revoke":
+		err = cmdRevoke(os.Args[2:])
 	case "acl":
 		err = cmdACL(os.Args[2:])
 	default:
@@ -67,19 +73,24 @@ func cmdServe(args []string) error {
 	tlsCert := fs.String("tls-cert", "", "certificat TLS (PEM) — active HTTPS")
 	tlsKey := fs.String("tls-key", "", "clé privée TLS (PEM)")
 	stunAddr := fs.String("stun-addr", ":3478", "adresse d'écoute STUN (UDP) ; \"off\" pour désactiver")
+	relayAddr := fs.String("relay-addr", ":3479", "adresse d'écoute du relais de secours (UDP) ; \"off\" pour désactiver")
+	cidr := fs.String("cidr", control.DefaultCIDR, "plage d'adresses du réseau overlay (figée au premier démarrage)")
 	fs.Parse(args)
 
 	if (*tlsCert == "") != (*tlsKey == "") {
 		return fmt.Errorf("--tls-cert et --tls-key vont ensemble")
 	}
 
-	store, adminCreated, err := control.OpenStore(*statePath)
+	store, adminCreated, err := control.OpenStoreCIDR(*statePath, *cidr)
 	if err != nil {
 		return err
 	}
 	if adminCreated {
 		log.Printf("première initialisation — clé admin : %s", store.AdminKey())
 		log.Printf("conservez-la : elle permet de créer des clés d'enrôlement (genkey)")
+	}
+	if store.CIDR() != *cidr && *cidr != control.DefaultCIDR {
+		log.Printf("attention : --cidr %s ignoré, la plage %s de l'état existant fait foi", *cidr, store.CIDR())
 	}
 
 	// Service STUN : permet aux agents de découvrir leur endpoint public
@@ -97,16 +108,31 @@ func cmdServe(args []string) error {
 		log.Printf("service STUN à l'écoute sur %s (UDP)", *stunAddr)
 	}
 
+	// Relais de secours : fait suivre les paquets (chiffrés) entre pairs
+	// dont le perçage NAT a échoué.
+	if *relayAddr != "off" {
+		pc, err := net.ListenPacket("udp", *relayAddr)
+		if err != nil {
+			return fmt.Errorf("écoute du relais sur %s: %w", *relayAddr, err)
+		}
+		go func() {
+			if err := relay.Serve(context.Background(), pc); err != nil {
+				log.Printf("relais: %v", err)
+			}
+		}()
+		log.Printf("relais de secours à l'écoute sur %s (UDP)", *relayAddr)
+	}
+
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           control.NewServer(store).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	if *tlsCert != "" {
-		log.Printf("serveur de coordination à l'écoute sur %s en HTTPS (réseau %s)", *addr, control.NetworkCIDR)
+		log.Printf("serveur de coordination à l'écoute sur %s en HTTPS (réseau %s)", *addr, store.CIDR())
 		return srv.ListenAndServeTLS(*tlsCert, *tlsKey)
 	}
-	log.Printf("serveur de coordination à l'écoute sur %s (réseau %s)", *addr, control.NetworkCIDR)
+	log.Printf("serveur de coordination à l'écoute sur %s (réseau %s)", *addr, store.CIDR())
 	log.Printf("attention : HTTP en clair — utilisez --tls-cert/--tls-key ou un reverse proxy TLS en production")
 	return srv.ListenAndServe()
 }
@@ -152,6 +178,25 @@ func cmdDevices(args []string) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.IP, p.Hostname, state, p.Endpoint, last)
 	}
 	return tw.Flush()
+}
+
+// cmdRevoke retire une machine du réseau (par IP, nom ou id).
+func cmdRevoke(args []string) error {
+	fs := flag.NewFlagSet("revoke", flag.ExitOnError)
+	server := fs.String("server", "http://127.0.0.1:8080", "URL du serveur de coordination")
+	adminKey := fs.String("admin-key", os.Getenv("OMNIUP_ADMIN_KEY"), "clé admin du serveur")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage : omni-server revoke MACHINE (ip, nom ou id)")
+	}
+
+	var revoked types.Peer
+	url := fmt.Sprintf("%s/api/v1/devices/%s", *server, neturl.PathEscape(fs.Arg(0)))
+	if err := adminCall("DELETE", url, *adminKey, nil, &revoked); err != nil {
+		return err
+	}
+	fmt.Printf("machine révoquée : %s (%s)\n", revoked.Hostname, revoked.IP)
+	return nil
 }
 
 // cmdACL affiche la politique d'accès courante, ou la remplace avec --set.

@@ -17,11 +17,13 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
 
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/relay"
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/stun"
 )
 
@@ -30,11 +32,16 @@ type PongHandler func(id DiscoTxID, from netip.AddrPort)
 
 // Bind implémente conn.Bind au-dessus d'une unique socket UDP.
 type Bind struct {
-	mu       sync.Mutex
-	udp      *net.UDPConn
-	stunTx   map[stun.TxID]chan netip.AddrPort
-	onPong   PongHandler
-	closed   bool
+	mu     sync.Mutex
+	udp    *net.UDPConn
+	stunTx map[stun.TxID]chan netip.AddrPort
+	onPong PongHandler
+	closed bool
+
+	// Relais de secours : les endpoints "relay:<clé>" passent par lui.
+	relayAddr    netip.AddrPort
+	relaySelfKey [32]byte
+	relayLastAck time.Time
 }
 
 var _ conn.Bind = (*Bind)(nil)
@@ -89,12 +96,57 @@ func (b *Bind) receive(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, er
 			b.handleDisco(pkt, src)
 		case stun.IsBindingResponse(pkt):
 			b.handleSTUN(pkt)
+		case relay.IsFrame(pkt):
+			// Un paquet relayé est remis au moteur avec un endpoint
+			// relais comme source : le roaming WireGuard fait alors
+			// naturellement transiter les réponses par le relais.
+			switch relay.FrameType(pkt) {
+			case relay.TypeAck:
+				b.mu.Lock()
+				b.relayLastAck = time.Now()
+				b.mu.Unlock()
+			case relay.TypeRecv:
+				srcKey, payload, ok := relay.ParseKeyed(pkt)
+				if ok && len(payload) > 0 && len(payload) <= len(bufs[0]) {
+					copy(bufs[0], payload)
+					sizes[0] = len(payload)
+					eps[0] = &relayEndpoint{peerKey: srcKey}
+					return 1, nil
+				}
+			}
 		default:
 			sizes[0] = n
 			eps[0] = &endpoint{ap: src}
 			return 1, nil
 		}
 	}
+}
+
+// ConfigureRelay active le relais de secours pour cette socket.
+func (b *Bind) ConfigureRelay(addr netip.AddrPort, selfKey [32]byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.relayAddr = addr
+	b.relaySelfKey = selfKey
+}
+
+// RelayRegister (ré)enregistre notre clé auprès du relais — à appeler
+// périodiquement : cela maintient aussi notre mapping NAT vers lui.
+func (b *Bind) RelayRegister() error {
+	b.mu.Lock()
+	addr, key := b.relayAddr, b.relaySelfKey
+	b.mu.Unlock()
+	if !addr.IsValid() {
+		return errors.New("relais non configuré")
+	}
+	return b.writeTo(relay.BuildRegister(key), addr)
+}
+
+// RelayHealthy indique si le relais a répondu récemment.
+func (b *Bind) RelayHealthy() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.relayAddr.IsValid() && time.Since(b.relayLastAck) < 35*time.Second
 }
 
 func (b *Bind) handleDisco(pkt []byte, src netip.AddrPort) {
@@ -220,20 +272,42 @@ func (b *Bind) BatchSize() int { return 1 }
 
 // Send implémente conn.Bind.
 func (b *Bind) Send(bufs [][]byte, ep conn.Endpoint) error {
-	e, ok := ep.(*endpoint)
-	if !ok {
+	switch e := ep.(type) {
+	case *endpoint:
+		for _, buf := range bufs {
+			if err := b.writeTo(buf, e.ap); err != nil {
+				return err
+			}
+		}
+		return nil
+	case *relayEndpoint:
+		b.mu.Lock()
+		addr := b.relayAddr
+		b.mu.Unlock()
+		if !addr.IsValid() {
+			return errors.New("endpoint relais sans relais configuré")
+		}
+		for _, buf := range bufs {
+			if err := b.writeTo(relay.BuildForward(e.peerKey, buf), addr); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
 		return errors.New("endpoint d'un autre bind")
 	}
-	for _, buf := range bufs {
-		if err := b.writeTo(buf, e.ap); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
-// ParseEndpoint implémente conn.Bind.
+// ParseEndpoint implémente conn.Bind. Deux formes : "ip:port" classique,
+// ou "relay:<clé publique base64>" pour un pair joint via le relais.
 func (b *Bind) ParseEndpoint(s string) (conn.Endpoint, error) {
+	if peerB64, ok := strings.CutPrefix(s, relay.EndpointPrefix); ok {
+		key, valid := relay.KeyFromB64(peerB64)
+		if !valid {
+			return nil, fmt.Errorf("endpoint relais invalide %q", s)
+		}
+		return &relayEndpoint{peerKey: key}, nil
+	}
 	udpAddr, err := net.ResolveUDPAddr("udp", s)
 	if err != nil {
 		return nil, err
@@ -254,3 +328,13 @@ func (e *endpoint) DstToBytes() []byte {
 	b, _ := e.ap.MarshalBinary()
 	return b
 }
+
+// relayEndpoint implémente conn.Endpoint pour un pair joint via le relais.
+type relayEndpoint struct{ peerKey [32]byte }
+
+func (e *relayEndpoint) ClearSrc()           {}
+func (e *relayEndpoint) SrcToString() string { return "" }
+func (e *relayEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
+func (e *relayEndpoint) DstIP() netip.Addr   { return netip.Addr{} }
+func (e *relayEndpoint) DstToString() string { return relay.EndpointString(relay.KeyToB64(e.peerKey)) }
+func (e *relayEndpoint) DstToBytes() []byte  { return append([]byte(nil), e.peerKey[:]...) }

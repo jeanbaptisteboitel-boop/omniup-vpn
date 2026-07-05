@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,9 +15,10 @@ import (
 	"time"
 )
 
-// NetworkCIDR est la plage d'adresses du réseau overlay (CGNAT, comme Tailscale).
-// MVP : un /24 ; la cible à terme est 100.64.0.0/10.
-const NetworkCIDR = "100.64.0.0/24"
+// DefaultCIDR est la plage d'adresses par défaut du réseau overlay
+// (CGNAT, comme Tailscale). Configurable jusqu'à 100.64.0.0/10 via
+// « omni-server serve --cidr », figée au premier démarrage.
+const DefaultCIDR = "100.64.0.0/24"
 
 // OnlineThreshold : une machine est considérée en ligne si elle a poll
 // le serveur dans cet intervalle (l'agent poll toutes les 10 s).
@@ -49,6 +52,7 @@ type AuthKey struct {
 
 type stateFile struct {
 	AdminKey string             `json:"admin_key"`
+	CIDR     string             `json:"cidr,omitempty"`
 	AuthKeys []*AuthKey         `json:"auth_keys"`
 	Devices  map[string]*Device `json:"devices"` // indexées par clé publique
 	ACL      *ACLPolicy         `json:"acl,omitempty"`
@@ -61,9 +65,19 @@ type Store struct {
 	s    *stateFile
 }
 
-// OpenStore charge l'état depuis path, ou initialise un état vide.
-// Renvoie aussi true si la clé admin vient d'être créée (premier démarrage).
+// OpenStore charge l'état depuis path, ou initialise un état vide avec la
+// plage DefaultCIDR. Renvoie aussi true si la clé admin vient d'être créée.
 func OpenStore(path string) (*Store, bool, error) {
+	return OpenStoreCIDR(path, DefaultCIDR)
+}
+
+// OpenStoreCIDR ouvre l'état en fixant la plage d'adresses au premier
+// démarrage. Sur un état existant, la plage enregistrée fait foi (changer
+// de plage implique de ré-enrôler les machines).
+func OpenStoreCIDR(path, cidr string) (*Store, bool, error) {
+	if _, _, err := net.ParseCIDR(cidr); err != nil {
+		return nil, false, fmt.Errorf("cidr invalide %q: %w", cidr, err)
+	}
 	st := &Store{path: path, s: &stateFile{Devices: map[string]*Device{}}}
 	data, err := os.ReadFile(path)
 	switch {
@@ -84,11 +98,23 @@ func OpenStore(path string) (*Store, bool, error) {
 	if st.s.AdminKey == "" {
 		st.s.AdminKey = "omadmin-" + randomHex(24)
 		created = true
+	}
+	if st.s.CIDR == "" {
+		st.s.CIDR = cidr
+	}
+	if created {
 		if err := st.saveLocked(); err != nil {
 			return nil, false, err
 		}
 	}
 	return st, created, nil
+}
+
+// CIDR renvoie la plage d'adresses du réseau overlay.
+func (st *Store) CIDR() string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.s.CIDR
 }
 
 // AdminKey renvoie la clé d'administration du serveur.
@@ -225,19 +251,43 @@ func (st *Store) SetACL(p *ACLPolicy) error {
 	return st.saveLocked()
 }
 
-// allocateIPLocked attribue la première adresse libre de la plage.
+// allocateIPLocked attribue la première adresse libre de la plage
+// (adresses de réseau et de broadcast exclues).
 func (st *Store) allocateIPLocked() (string, error) {
+	prefix, err := netip.ParsePrefix(st.s.CIDR)
+	if err != nil {
+		return "", fmt.Errorf("cidr de l'état invalide %q: %w", st.s.CIDR, err)
+	}
+	prefix = prefix.Masked()
 	used := make(map[string]bool, len(st.s.Devices))
 	for _, d := range st.s.Devices {
 		used[d.IP] = true
 	}
-	for host := 1; host < 255; host++ {
-		ip := fmt.Sprintf("100.64.0.%d", host)
-		if !used[ip] {
-			return ip, nil
+	for a := prefix.Addr().Next(); prefix.Contains(a) && prefix.Contains(a.Next()); a = a.Next() {
+		if !used[a.String()] {
+			return a.String(), nil
 		}
 	}
 	return "", ErrIPExhausted
+}
+
+// RemoveDevice révoque une machine désignée par son IP, son nom ou son ID.
+// La machine disparaît des cartes du réseau au prochain poll des agents et
+// son jeton cesse d'être valide.
+func (st *Store) RemoveDevice(target string) (*Device, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for pub, d := range st.s.Devices {
+		if d.IP == target || d.Hostname == target || d.ID == target {
+			delete(st.s.Devices, pub)
+			if err := st.saveLocked(); err != nil {
+				return nil, err
+			}
+			cp := *d
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("aucune machine ne correspond à %q", target)
 }
 
 // saveLocked persiste l'état de façon atomique (fichier temporaire + rename).
