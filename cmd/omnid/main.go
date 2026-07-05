@@ -27,10 +27,13 @@ var version = "dev"
 const usage = `omnid — agent OmniUp VPN
 
 Usage :
-  omnid up     --server URL --auth-key CLÉ [--hostname NOM] [--iface omni0] [--port 41641]
+  omnid up     --server URL [--auth-key CLÉ] [--hostname NOM] [--iface omni0] [--port 41641]
                [--mtu 1280] [--stun hôte:3478,...] [--relay hôte:3479] [--dns=true] [--dns-zone omni]
   omnid status
   omnid down
+
+Sans --auth-key, l'enrôlement passe par le SSO du serveur (si configuré) :
+une URL s'affiche, ouvrez-la dans un navigateur pour authentifier la machine.
 
 Options communes :
   --state CHEMIN   fichier d'identité de la machine (défaut : /var/lib/omniup/omnid.json)

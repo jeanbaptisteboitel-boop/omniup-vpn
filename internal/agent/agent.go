@@ -54,9 +54,6 @@ func Up(ctx context.Context, opts Options) error {
 	}
 
 	if st == nil {
-		if opts.AuthKey == "" {
-			return fmt.Errorf("première connexion : --auth-key est requis")
-		}
 		if opts.ServerURL == "" {
 			return fmt.Errorf("première connexion : --server est requis")
 		}
@@ -65,9 +62,19 @@ func Up(ctx context.Context, opts Options) error {
 			return err
 		}
 		c := NewClient(opts.ServerURL, "")
-		reg, err := c.Register(opts.AuthKey, opts.Hostname, priv.PublicKey().String())
-		if err != nil {
-			return fmt.Errorf("enregistrement: %w", err)
+		var reg *types.RegisterResponse
+		if opts.AuthKey != "" {
+			reg, err = c.Register(opts.AuthKey, opts.Hostname, priv.PublicKey().String())
+			if err != nil {
+				return fmt.Errorf("enregistrement: %w", err)
+			}
+		} else {
+			// Pas de clé : enrôlement SSO — l'utilisateur s'authentifie
+			// dans un navigateur pendant que l'agent attend.
+			reg, err = enrollSSO(ctx, c, opts.Hostname, priv.PublicKey().String())
+			if err != nil {
+				return err
+			}
 		}
 		st = &State{
 			ServerURL:   c.ServerURL,
@@ -222,6 +229,38 @@ func Up(ctx context.Context, opts Options) error {
 			return nil
 		case <-ticker.C:
 			sync()
+		}
+	}
+}
+
+// enrollSSO déroule l'enrôlement par navigateur : affiche l'URL et sonde
+// le serveur jusqu'à l'authentification (ou l'expiration, ~15 min).
+func enrollSSO(ctx context.Context, c *Client, hostname, publicKey string) (*types.RegisterResponse, error) {
+	start, err := c.EnrollStart(hostname, publicKey)
+	if err != nil {
+		return nil, fmt.Errorf("enrôlement SSO impossible (%w) — utilisez --auth-key si le serveur n'a pas de SSO", err)
+	}
+	log.Printf("Pour connecter cette machine, ouvrez cette URL dans un navigateur :")
+	log.Printf("")
+	log.Printf("    %s", start.AuthURL)
+	log.Printf("")
+	log.Printf("(en attente d'authentification…)")
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+			reg, pending, err := c.EnrollWait(start.SessionID)
+			if err != nil {
+				return nil, fmt.Errorf("enrôlement SSO: %w", err)
+			}
+			if pending {
+				continue
+			}
+			return reg, nil
 		}
 	}
 }

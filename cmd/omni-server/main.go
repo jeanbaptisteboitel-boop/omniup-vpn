@@ -16,6 +16,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -80,6 +81,12 @@ func cmdServe(args []string) error {
 	stunAddr := fs.String("stun-addr", ":3478", "adresse d'écoute STUN (UDP) ; \"off\" pour désactiver")
 	relayAddr := fs.String("relay-addr", ":3479", "adresse d'écoute du relais de secours (UDP) ; \"off\" pour désactiver")
 	cidr := fs.String("cidr", control.DefaultCIDR, "plage d'adresses du réseau overlay (figée au premier démarrage)")
+	oidcIssuer := fs.String("oidc-issuer", "", "URL du fournisseur OIDC (ex: https://accounts.google.com) — active l'enrôlement SSO")
+	oidcClientID := fs.String("oidc-client-id", "", "client ID OIDC")
+	oidcClientSecret := fs.String("oidc-client-secret", os.Getenv("OMNIUP_OIDC_CLIENT_SECRET"), "client secret OIDC (ou variable OMNIUP_OIDC_CLIENT_SECRET)")
+	publicURL := fs.String("public-url", "", "URL publique du serveur, ex: https://vpn.omniup.fr (requis pour le SSO)")
+	oidcDomain := fs.String("oidc-allowed-domain", "", "n'autoriser que les e-mails de ce domaine")
+	oidcEmails := fs.String("oidc-allowed-emails", "", "n'autoriser que ces e-mails (séparés par des virgules)")
 	fs.Parse(args)
 
 	if (*tlsCert == "") != (*tlsKey == "") {
@@ -128,9 +135,31 @@ func cmdServe(args []string) error {
 		log.Printf("relais de secours à l'écoute sur %s (UDP)", *relayAddr)
 	}
 
+	api := control.NewServer(store)
+	if *oidcIssuer != "" {
+		var emails []string
+		for _, e := range strings.Split(*oidcEmails, ",") {
+			if e = strings.TrimSpace(e); e != "" {
+				emails = append(emails, e)
+			}
+		}
+		err := api.EnableOIDC(context.Background(), control.OIDCConfig{
+			Issuer:        *oidcIssuer,
+			ClientID:      *oidcClientID,
+			ClientSecret:  *oidcClientSecret,
+			PublicURL:     *publicURL,
+			AllowedDomain: *oidcDomain,
+			AllowedEmails: emails,
+		})
+		if err != nil {
+			return err
+		}
+		log.Printf("enrôlement SSO actif via %s", *oidcIssuer)
+	}
+
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           control.NewServer(store).Handler(),
+		Handler:           api.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	if *tlsCert != "" {
@@ -174,7 +203,7 @@ func cmdDevices(args []string) error {
 	}
 
 	tw := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "IP\tMACHINE\tÉTAT\tENDPOINT\tDERNIÈRE ACTIVITÉ")
+	fmt.Fprintln(tw, "IP\tMACHINE\tPROPRIÉTAIRE\tÉTAT\tENDPOINT\tDERNIÈRE ACTIVITÉ")
 	for _, p := range peers {
 		state := "hors ligne"
 		if p.Online {
@@ -184,7 +213,11 @@ func cmdDevices(args []string) error {
 		if !p.LastSeen.IsZero() {
 			last = p.LastSeen.Local().Format("2006-01-02 15:04:05")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.IP, p.Hostname, state, p.Endpoint, last)
+		owner := p.Owner
+		if owner == "" {
+			owner = "(clé)"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", p.IP, p.Hostname, owner, state, p.Endpoint, last)
 	}
 	return tw.Flush()
 }

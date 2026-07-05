@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -38,6 +39,45 @@ func (c *Client) Register(authKey, hostname, publicKey string) (*types.RegisterR
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// EnrollStart ouvre une session d'enrôlement SSO.
+func (c *Client) EnrollStart(hostname, publicKey string) (*types.EnrollStartResponse, error) {
+	var resp types.EnrollStartResponse
+	err := c.do("POST", "/api/v1/enroll/start", types.EnrollStartRequest{
+		Hostname:  hostname,
+		PublicKey: publicKey,
+	}, &resp)
+	if err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// EnrollWait sonde une session d'enrôlement : pending=true tant que
+// l'utilisateur ne s'est pas authentifié dans le navigateur.
+func (c *Client) EnrollWait(sessionID string) (*types.RegisterResponse, bool, error) {
+	resp, err := c.http.Get(c.ServerURL + "/api/v1/enroll/wait?session=" + url.QueryEscape(sessionID))
+	if err != nil {
+		return nil, false, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusAccepted:
+		return nil, true, nil
+	case http.StatusOK:
+		var reg types.RegisterResponse
+		if err := json.NewDecoder(resp.Body).Decode(&reg); err != nil {
+			return nil, false, err
+		}
+		return &reg, false, nil
+	default:
+		var apiErr types.ErrorResponse
+		if json.NewDecoder(resp.Body).Decode(&apiErr) == nil && apiErr.Error != "" {
+			return nil, false, fmt.Errorf("serveur: %s (HTTP %d)", apiErr.Error, resp.StatusCode)
+		}
+		return nil, false, fmt.Errorf("serveur: HTTP %d", resp.StatusCode)
+	}
 }
 
 // Poll signale nos endpoints candidats et récupère la carte du réseau.

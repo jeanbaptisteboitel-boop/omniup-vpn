@@ -138,6 +138,34 @@ Dans `omnid status`, la colonne « via » dit tout :
 
 La console `/admin` montre les machines passer « en ligne » en ~10 s.
 
+## 7. (Optionnel) Enrôlement SSO avec Google
+
+Pour enrôler les machines en s'authentifiant avec un compte Google plutôt
+qu'avec des clés :
+
+1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+   → **Créer des identifiants** → **ID client OAuth** → type « Application
+   Web » → URI de redirection autorisée :
+   `https://vpn.omniup.fr/oidc/callback`. Notez le client ID et le secret.
+2. Ajoutez au démarrage du serveur (dans `docker-compose.yml` via `command:`,
+   ou `/etc/default/omni-server` → `OPTIONS`) :
+
+   ```
+   --public-url https://vpn.omniup.fr
+   --oidc-issuer https://accounts.google.com
+   --oidc-client-id XXX.apps.googleusercontent.com
+   --oidc-allowed-emails jeanbaptiste.boitel@gmail.com
+   ```
+
+   et le secret via la variable d'environnement
+   `OMNIUP_OIDC_CLIENT_SECRET` (évitez de le mettre en argument).
+3. Sur les machines : `sudo omnid up --server https://vpn.omniup.fr`
+   (sans `--auth-key`) — une URL s'affiche, ouvrez-la où vous voulez,
+   authentifiez-vous, c'est fait.
+
+Fonctionne à l'identique avec tout fournisseur OpenID Connect (Keycloak,
+Authentik, Microsoft Entra…) : changez `--oidc-issuer`.
+
 ## Dépannage
 
 | Symptôme | Piste |

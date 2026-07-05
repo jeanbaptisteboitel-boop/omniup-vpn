@@ -73,7 +73,7 @@
 
     <section class="panel" id="tab-machines">
       <table>
-        <thead><tr><th>État</th><th>Machine</th><th>IP</th><th>Endpoint</th><th>Dernière activité</th><th></th></tr></thead>
+        <thead><tr><th>État</th><th>Machine</th><th>Propriétaire</th><th>IP</th><th>Endpoint</th><th>Dernière activité</th><th></th></tr></thead>
         <tbody id="devices"></tbody>
       </table>
       <p class="muted" id="nodevices" style="display:none">Aucune machine enrôlée. Créez une clé dans l'onglet « Clés d'enrôlement ».</p>
@@ -146,6 +146,7 @@ async function loadDevices() {
     <tr>
       <td><span class="dot ${d.online ? "on" : "off"}"></span>${d.online ? "en ligne" : "hors ligne"}</td>
       <td>${esc(d.hostname)}</td>
+      <td class="muted">${esc(d.owner || "clé d'enrôlement")}</td>
       <td><code>${esc(d.ip)}</code></td>
       <td><code>${esc(d.endpoint || "—")}</code></td>
       <td>${fmtDate(d.last_seen)}</td>

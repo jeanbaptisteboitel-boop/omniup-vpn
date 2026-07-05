@@ -33,10 +33,24 @@ type Peer struct {
 	Hostname  string    `json:"hostname"`
 	PublicKey string    `json:"public_key"`
 	IP        string    `json:"ip"`
+	Owner     string    `json:"owner,omitempty"`     // e-mail SSO, vide si enrôlée par clé
 	Endpoint  string    `json:"endpoint,omitempty"`  // observé par le serveur
 	Endpoints []string  `json:"endpoints,omitempty"` // candidats rapportés par l'agent
 	LastSeen  time.Time `json:"last_seen"`
 	Online    bool      `json:"online"`
+}
+
+// EnrollStartRequest ouvre une session d'enrôlement SSO : l'agent fournit
+// son identité WireGuard, l'utilisateur s'authentifie dans un navigateur.
+type EnrollStartRequest struct {
+	Hostname  string `json:"hostname"`
+	PublicKey string `json:"public_key"`
+}
+
+// EnrollStartResponse contient l'URL à ouvrir dans un navigateur.
+type EnrollStartResponse struct {
+	SessionID string `json:"session_id"`
+	AuthURL   string `json:"auth_url"`
 }
 
 // NetMap est la carte du réseau distribuée à chaque agent.

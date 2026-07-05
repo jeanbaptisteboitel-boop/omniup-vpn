@@ -26,6 +26,7 @@ import (
 //   GET  /api/v1/devices   — liste des machines
 type Server struct {
 	store *Store
+	oidc  *oidcProvider // nil : enrôlement SSO désactivé
 }
 
 func NewServer(store *Store) *Server {
@@ -43,6 +44,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/acl", s.requireAdmin(s.handleGetACL))
 	mux.HandleFunc("PUT /api/v1/acl", s.requireAdmin(s.handleSetACL))
 	mux.HandleFunc("GET /api/v1/info", s.requireAdmin(s.handleInfo))
+	mux.HandleFunc("POST /api/v1/enroll/start", s.handleEnrollStart)
+	mux.HandleFunc("GET /api/v1/enroll/wait", s.handleEnrollWait)
+	mux.HandleFunc("GET /enroll/{id}", s.handleEnrollRedirect)
+	mux.HandleFunc("GET /oidc/callback", s.handleOIDCCallback)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -243,6 +248,7 @@ func peerView(d Device, now time.Time) types.Peer {
 		Hostname:  d.Hostname,
 		PublicKey: d.PublicKey,
 		IP:        d.IP,
+		Owner:     d.Owner,
 		Endpoint:  d.Endpoint,
 		Endpoints: append([]string(nil), d.Endpoints...),
 		LastSeen:  d.LastSeen,
@@ -279,6 +285,10 @@ func bearerToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimPrefix(h, prefix)
+}
+
+func decodeJSON(r *http.Request, v any) error {
+	return json.NewDecoder(r.Body).Decode(v)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

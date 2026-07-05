@@ -41,6 +41,7 @@ const tokenGrace = time.Hour
 type Device struct {
 	ID             string    `json:"id"`
 	Hostname       string    `json:"hostname"`
+	Owner          string    `json:"owner,omitempty"` // e-mail SSO, vide si enrôlée par clé
 	PublicKey      string    `json:"public_key"`
 	Token          string    `json:"token"`
 	TokenIssuedAt  time.Time `json:"token_issued_at,omitempty"`
@@ -198,27 +199,73 @@ func (st *Store) RegisterDevice(authKey, hostname, publicKey string) (*Device, e
 		return nil, ErrInvalidAuthKey
 	}
 
+	d, err := st.createDeviceLocked(hostname, publicKey, "")
+	if err != nil {
+		return nil, err
+	}
+	key.Used = true
+	if err := st.saveLocked(); err != nil {
+		return nil, err
+	}
+	cp := *d
+	return &cp, nil
+}
+
+// RegisterDeviceSSO enrôle une machine au nom d'un utilisateur authentifié
+// par le fournisseur d'identité (pas de clé d'enrôlement à consommer).
+// Idempotent pour une clé publique déjà connue.
+func (st *Store) RegisterDeviceSSO(hostname, publicKey, owner string) (*Device, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	if d, ok := st.s.Devices[publicKey]; ok {
+		changed := false
+		if hostname != "" && d.Hostname != hostname {
+			d.Hostname = hostname
+			changed = true
+		}
+		if owner != "" && d.Owner != owner {
+			d.Owner = owner
+			changed = true
+		}
+		if changed {
+			if err := st.saveLocked(); err != nil {
+				return nil, err
+			}
+		}
+		cp := *d
+		return &cp, nil
+	}
+
+	d, err := st.createDeviceLocked(hostname, publicKey, owner)
+	if err != nil {
+		return nil, err
+	}
+	if err := st.saveLocked(); err != nil {
+		return nil, err
+	}
+	cp := *d
+	return &cp, nil
+}
+
+// createDeviceLocked alloue une IP et crée la machine (sans sauvegarder).
+func (st *Store) createDeviceLocked(hostname, publicKey, owner string) (*Device, error) {
 	ip, err := st.allocateIPLocked()
 	if err != nil {
 		return nil, err
 	}
-
 	d := &Device{
 		ID:            randomHex(8),
 		Hostname:      hostname,
+		Owner:         owner,
 		PublicKey:     publicKey,
 		Token:         "omtok-" + randomHex(24),
 		TokenIssuedAt: time.Now().UTC(),
 		IP:            ip,
 		CreatedAt:     time.Now().UTC(),
 	}
-	key.Used = true
 	st.s.Devices[publicKey] = d
-	if err := st.saveLocked(); err != nil {
-		return nil, err
-	}
-	cp := *d
-	return &cp, nil
+	return d, nil
 }
 
 // DeviceByToken retrouve une machine par son jeton d'API (le jeton

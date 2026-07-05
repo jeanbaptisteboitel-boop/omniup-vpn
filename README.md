@@ -162,6 +162,10 @@ L'interface expose la socket UAPI standard (`/var/run/wireguard/omni0.sock`) :
 | Méthode | Chemin | Auth | Description |
 |---|---|---|---|
 | `POST` | `/api/v1/register` | clé d'enrôlement (corps) | Enrôle une machine, attribue une IP |
+| `POST` | `/api/v1/enroll/start` | — | Ouvre une session d'enrôlement SSO |
+| `GET` | `/api/v1/enroll/wait` | id de session | Attend l'authentification SSO |
+| `GET` | `/enroll/{id}` | — (navigateur) | Redirige vers le fournisseur d'identité |
+| `GET` | `/oidc/callback` | — (fournisseur) | Retour OIDC, enrôle la machine |
 | `POST` | `/api/v1/poll` | `Bearer` jeton machine | Heartbeat + carte du réseau (filtrée par les ACLs) |
 | `POST` | `/api/v1/authkeys` | `Bearer` clé admin | Crée une clé d'enrôlement (`?reusable=true`) |
 | `GET` | `/api/v1/devices` | `Bearer` clé admin | Liste des machines |
@@ -172,6 +176,41 @@ L'interface expose la socket UAPI standard (`/var/run/wireguard/omni0.sock`) :
 | `GET` | `/api/v1/info` | `Bearer` clé admin | Résumé du réseau (plage, machines en ligne) |
 | `GET` | `/admin` | — (page) | Console web d'administration |
 | `GET` | `/healthz` | — | Sonde de vie |
+
+## Enrôlement SSO (OpenID Connect)
+
+À la place des clés pré-partagées, les machines peuvent s'enrôler via
+votre fournisseur d'identité (Google, GitHub via OIDC, Keycloak,
+Authentik…). Côté serveur :
+
+```sh
+omni-server serve … \
+  --public-url https://vpn.omniup.fr \
+  --oidc-issuer https://accounts.google.com \
+  --oidc-client-id XXX.apps.googleusercontent.com \
+  --oidc-client-secret … \            # ou OMNIUP_OIDC_CLIENT_SECRET
+  --oidc-allowed-domain omniup.fr     # ou --oidc-allowed-emails a@x.fr,b@x.fr
+```
+
+(Déclarez `https://vpn.omniup.fr/oidc/callback` comme URI de redirection
+dans la console du fournisseur.)
+
+Côté machine, il suffit d'omettre la clé :
+
+```sh
+sudo omnid up --server https://vpn.omniup.fr
+# Pour connecter cette machine, ouvrez cette URL dans un navigateur :
+#     https://vpn.omniup.fr/enroll/…
+```
+
+L'URL s'ouvre dans **n'importe quel navigateur** (pas forcément sur la
+machine enrôlée — pratique pour un serveur sans interface graphique).
+Après authentification, la machine rejoint le réseau, rattachée à
+l'e-mail de l'utilisateur (visible dans `omni-server devices` et la
+console web). Le contrôle d'accès se fait par domaine ou liste d'e-mails ;
+sans filtre, tout compte vérifié du fournisseur est accepté (un
+avertissement est journalisé). Les clés `--auth-key` restent utilisables
+en parallèle.
 
 ## Console web d'administration
 
@@ -269,7 +308,9 @@ Les prochaines étapes, par ordre de priorité :
       clés d'enrôlement, ACLs, révocation
 - [ ] Support macOS/Windows (le moteur userspace rend le portage possible ;
       il reste l'adressage et les routes par plateforme)
-- [ ] SSO/OIDC pour l'enrôlement à la place des clés pré-partagées
+- [x] **SSO/OIDC** : enrôlement par navigateur via un fournisseur
+      d'identité, machines rattachées à un e-mail, filtre par domaine
+      ou liste d'e-mails
 
 ## Déploiement
 
