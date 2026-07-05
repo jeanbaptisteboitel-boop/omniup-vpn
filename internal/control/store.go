@@ -157,6 +157,17 @@ func (st *Store) CreateAuthKey(reusable bool, ttl time.Duration) (*AuthKey, erro
 	return &cp, nil
 }
 
+// AuthKeys renvoie une copie de toutes les clés d'enrôlement.
+func (st *Store) AuthKeys() []AuthKey {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	out := make([]AuthKey, 0, len(st.s.AuthKeys))
+	for _, k := range st.s.AuthKeys {
+		out = append(out, *k)
+	}
+	return out
+}
+
 // RegisterDevice enrôle une machine avec une clé d'authentification valide.
 // Si la clé publique est déjà connue, la machine existante est renvoyée
 // (ré-enregistrement idempotent) sans consommer la clé.

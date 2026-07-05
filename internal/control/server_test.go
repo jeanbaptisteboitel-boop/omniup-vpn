@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -336,6 +337,65 @@ func TestCIDRIsSticky(t *testing.T) {
 	}
 	if _, _, err := OpenStoreCIDR(path, "pas-un-cidr"); err == nil {
 		t.Fatal("cidr invalide accepté")
+	}
+}
+
+func TestInfoAndAuthKeyList(t *testing.T) {
+	ts, store := newTestServer(t)
+
+	var keyResp types.AuthKeyResponse
+	doJSON(t, "POST", ts.URL+"/api/v1/authkeys?reusable=true&ttl=1h", store.AdminKey(), nil, &keyResp)
+	var reg types.RegisterResponse
+	doJSON(t, "POST", ts.URL+"/api/v1/register", "", types.RegisterRequest{
+		AuthKey: keyResp.Key, Hostname: "alpha", PublicKey: genPubKey(t),
+	}, &reg)
+	doJSON(t, "POST", ts.URL+"/api/v1/poll", reg.DeviceToken, types.PollRequest{ListenPort: 1}, nil)
+
+	var info types.InfoResponse
+	doJSON(t, "GET", ts.URL+"/api/v1/info", store.AdminKey(), nil, &info)
+	if info.CIDR != DefaultCIDR || info.DeviceCount != 1 || info.OnlineCount != 1 {
+		t.Fatalf("info inattendue: %+v", info)
+	}
+
+	var keys []types.AuthKeyInfo
+	doJSON(t, "GET", ts.URL+"/api/v1/authkeys", store.AdminKey(), nil, &keys)
+	if len(keys) != 1 || !keys[0].Reusable || keys[0].ExpiresAt.IsZero() {
+		t.Fatalf("liste de clés inattendue: %+v", keys)
+	}
+	if keys[0].KeyMasked == keyResp.Key || !strings.Contains(keys[0].KeyMasked, "…") {
+		t.Fatalf("la clé devrait être masquée: %q", keys[0].KeyMasked)
+	}
+}
+
+func TestWebUIServed(t *testing.T) {
+	ts, _ := newTestServer(t)
+
+	resp, err := http.Get(ts.URL + "/admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/admin: HTTP %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("type inattendu: %s", ct)
+	}
+	body := make([]byte, 4096)
+	n, _ := resp.Body.Read(body)
+	if !strings.Contains(string(body[:n]), "OmniUp VPN") {
+		t.Fatal("la console devrait contenir le titre attendu")
+	}
+
+	// La racine redirige vers /admin.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp2, err := client.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusFound || resp2.Header.Get("Location") != "/admin" {
+		t.Fatalf("la racine devrait rediriger vers /admin: %d %s", resp2.StatusCode, resp2.Header.Get("Location"))
 	}
 }
 

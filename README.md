@@ -166,9 +166,24 @@ L'interface expose la socket UAPI standard (`/var/run/wireguard/omni0.sock`) :
 | `POST` | `/api/v1/authkeys` | `Bearer` clé admin | Crée une clé d'enrôlement (`?reusable=true`) |
 | `GET` | `/api/v1/devices` | `Bearer` clé admin | Liste des machines |
 | `DELETE` | `/api/v1/devices/{cible}` | `Bearer` clé admin | Révoque une machine (IP, nom ou id) |
+| `GET` | `/api/v1/authkeys` | `Bearer` clé admin | Liste des clés d'enrôlement (masquées) |
 | `GET` | `/api/v1/acl` | `Bearer` clé admin | Politique d'accès courante |
 | `PUT` | `/api/v1/acl` | `Bearer` clé admin | Remplace la politique d'accès |
+| `GET` | `/api/v1/info` | `Bearer` clé admin | Résumé du réseau (plage, machines en ligne) |
+| `GET` | `/admin` | — (page) | Console web d'administration |
 | `GET` | `/healthz` | — | Sonde de vie |
+
+## Console web d'administration
+
+Le serveur embarque une console à l'adresse `http://SERVEUR:8080/admin`
+(page statique sans dépendance externe ; les données passent par l'API
+admin, la clé `omadmin-…` est saisie dans le navigateur) :
+
+- **Machines** : état en ligne/hors ligne en temps réel, IP, endpoints,
+  révocation en un clic ;
+- **Clés d'enrôlement** : création (usage unique/réutilisable, expiration),
+  liste avec statut — la valeur complète n'est affichée qu'à la création ;
+- **ACLs** : édition et application de la politique JSON.
 
 ## HTTPS
 
@@ -250,6 +265,8 @@ Les prochaines étapes, par ordre de priorité :
 - [x] **Expiration des clés d'enrôlement** (24 h par défaut, `--expiry`)
       et **rotation automatique des jetons machine** (24 h, période de
       grâce d'une heure pour l'ancien jeton)
+- [x] **Console web d'administration** embarquée (`/admin`) : machines,
+      clés d'enrôlement, ACLs, révocation
 - [ ] Support macOS/Windows (le moteur userspace rend le portage possible ;
       il reste l'adressage et les routes par plateforme)
 - [ ] SSO/OIDC pour l'enrôlement à la place des clés pré-partagées

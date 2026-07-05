@@ -37,13 +37,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/register", s.handleRegister)
 	mux.HandleFunc("POST /api/v1/poll", s.requireDevice(s.handlePoll))
 	mux.HandleFunc("POST /api/v1/authkeys", s.requireAdmin(s.handleCreateAuthKey))
+	mux.HandleFunc("GET /api/v1/authkeys", s.requireAdmin(s.handleListAuthKeys))
 	mux.HandleFunc("GET /api/v1/devices", s.requireAdmin(s.handleListDevices))
 	mux.HandleFunc("DELETE /api/v1/devices/{target}", s.requireAdmin(s.handleRevokeDevice))
 	mux.HandleFunc("GET /api/v1/acl", s.requireAdmin(s.handleGetACL))
 	mux.HandleFunc("PUT /api/v1/acl", s.requireAdmin(s.handleSetACL))
+	mux.HandleFunc("GET /api/v1/info", s.requireAdmin(s.handleInfo))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	registerWebUI(mux)
 	return mux
 }
 
@@ -161,6 +164,41 @@ func (s *Server) handleListDevices(w http.ResponseWriter, _ *http.Request) {
 		peers = append(peers, peerView(d, now))
 	}
 	writeJSON(w, http.StatusOK, peers)
+}
+
+func (s *Server) handleListAuthKeys(w http.ResponseWriter, _ *http.Request) {
+	keys := []types.AuthKeyInfo{}
+	for _, k := range s.store.AuthKeys() {
+		keys = append(keys, types.AuthKeyInfo{
+			KeyMasked: maskKey(k.Key),
+			Reusable:  k.Reusable,
+			Used:      k.Used,
+			CreatedAt: k.CreatedAt,
+			ExpiresAt: k.ExpiresAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, keys)
+}
+
+func (s *Server) handleInfo(w http.ResponseWriter, _ *http.Request) {
+	now := time.Now()
+	info := types.InfoResponse{CIDR: s.store.CIDR()}
+	for _, d := range s.store.Devices() {
+		info.DeviceCount++
+		if !d.LastSeen.IsZero() && now.Sub(d.LastSeen) < OnlineThreshold {
+			info.OnlineCount++
+		}
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+// maskKey ne laisse visible que la fin d'une clé (identification sans
+// divulgation : la valeur complète n'est montrée qu'à la création).
+func maskKey(key string) string {
+	if len(key) <= 10 {
+		return key
+	}
+	return key[:6] + "…" + key[len(key)-6:]
 }
 
 func (s *Server) handleRevokeDevice(w http.ResponseWriter, r *http.Request) {

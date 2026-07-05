@@ -56,6 +56,23 @@ type AuthKeyResponse struct {
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
+// AuthKeyInfo décrit une clé d'enrôlement existante (clé masquée : la
+// valeur complète n'est montrée qu'à la création).
+type AuthKeyInfo struct {
+	KeyMasked string    `json:"key_masked"`
+	Reusable  bool      `json:"reusable"`
+	Used      bool      `json:"used"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+}
+
+// InfoResponse résume l'état du réseau pour la console d'administration.
+type InfoResponse struct {
+	CIDR        string `json:"cidr"`
+	DeviceCount int    `json:"device_count"`
+	OnlineCount int    `json:"online_count"`
+}
+
 // ErrorResponse est le format d'erreur JSON de l'API.
 type ErrorResponse struct {
 	Error string `json:"error"`
