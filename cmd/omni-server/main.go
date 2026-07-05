@@ -1,0 +1,145 @@
+// omni-server est le serveur de coordination (plan de contrôle) du VPN :
+// il enrôle les machines, attribue les adresses IP du réseau overlay et
+// distribue la carte des pairs. Il ne voit jamais passer le trafic —
+// celui-ci circule en direct entre machines via WireGuard.
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"text/tabwriter"
+	"time"
+
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/control"
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/types"
+)
+
+const usage = `omni-server — serveur de coordination OmniUp VPN
+
+Usage :
+  omni-server serve   [--addr :8080] [--state ./omni-server.json]
+  omni-server genkey  [--server URL] [--admin-key CLÉ] [--reusable]
+  omni-server devices [--server URL] [--admin-key CLÉ]
+
+La clé admin est affichée au premier démarrage du serveur ; elle peut aussi
+être fournie via la variable d'environnement OMNIUP_ADMIN_KEY.
+`
+
+func main() {
+	log.SetFlags(log.Ldate | log.Ltime)
+	if len(os.Args) < 2 {
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	var err error
+	switch os.Args[1] {
+	case "serve":
+		err = cmdServe(os.Args[2:])
+	case "genkey":
+		err = cmdGenkey(os.Args[2:])
+	case "devices":
+		err = cmdDevices(os.Args[2:])
+	default:
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if err != nil {
+		log.Fatalf("erreur: %v", err)
+	}
+}
+
+func cmdServe(args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	addr := fs.String("addr", ":8080", "adresse d'écoute HTTP")
+	statePath := fs.String("state", "./omni-server.json", "fichier d'état du serveur")
+	fs.Parse(args)
+
+	store, adminCreated, err := control.OpenStore(*statePath)
+	if err != nil {
+		return err
+	}
+	if adminCreated {
+		log.Printf("première initialisation — clé admin : %s", store.AdminKey())
+		log.Printf("conservez-la : elle permet de créer des clés d'enrôlement (genkey)")
+	}
+
+	srv := &http.Server{
+		Addr:              *addr,
+		Handler:           control.NewServer(store).Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	log.Printf("serveur de coordination à l'écoute sur %s (réseau %s)", *addr, control.NetworkCIDR)
+	return srv.ListenAndServe()
+}
+
+func cmdGenkey(args []string) error {
+	fs := flag.NewFlagSet("genkey", flag.ExitOnError)
+	server := fs.String("server", "http://127.0.0.1:8080", "URL du serveur de coordination")
+	adminKey := fs.String("admin-key", os.Getenv("OMNIUP_ADMIN_KEY"), "clé admin du serveur")
+	reusable := fs.Bool("reusable", false, "clé réutilisable (plusieurs machines)")
+	fs.Parse(args)
+
+	var resp types.AuthKeyResponse
+	url := fmt.Sprintf("%s/api/v1/authkeys?reusable=%t", *server, *reusable)
+	if err := adminCall("POST", url, *adminKey, &resp); err != nil {
+		return err
+	}
+	fmt.Println(resp.Key)
+	return nil
+}
+
+func cmdDevices(args []string) error {
+	fs := flag.NewFlagSet("devices", flag.ExitOnError)
+	server := fs.String("server", "http://127.0.0.1:8080", "URL du serveur de coordination")
+	adminKey := fs.String("admin-key", os.Getenv("OMNIUP_ADMIN_KEY"), "clé admin du serveur")
+	fs.Parse(args)
+
+	var peers []types.Peer
+	if err := adminCall("GET", *server+"/api/v1/devices", *adminKey, &peers); err != nil {
+		return err
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "IP\tMACHINE\tÉTAT\tENDPOINT\tDERNIÈRE ACTIVITÉ")
+	for _, p := range peers {
+		state := "hors ligne"
+		if p.Online {
+			state = "en ligne"
+		}
+		last := "jamais"
+		if !p.LastSeen.IsZero() {
+			last = p.LastSeen.Local().Format("2006-01-02 15:04:05")
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", p.IP, p.Hostname, state, p.Endpoint, last)
+	}
+	return tw.Flush()
+}
+
+func adminCall(method, url, adminKey string, out any) error {
+	if adminKey == "" {
+		return fmt.Errorf("clé admin requise (--admin-key ou OMNIUP_ADMIN_KEY)")
+	}
+	req, err := http.NewRequest(method, url, bytes.NewReader(nil))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+adminKey)
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var apiErr types.ErrorResponse
+		if json.NewDecoder(resp.Body).Decode(&apiErr) == nil && apiErr.Error != "" {
+			return fmt.Errorf("serveur: %s (HTTP %d)", apiErr.Error, resp.StatusCode)
+		}
+		return fmt.Errorf("serveur: HTTP %d", resp.StatusCode)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
