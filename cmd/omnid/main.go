@@ -21,6 +21,7 @@ const usage = `omnid — agent OmniUp VPN
 
 Usage :
   omnid up     --server URL --auth-key CLÉ [--hostname NOM] [--iface omni0] [--port 41641]
+               [--dns=true] [--dns-zone omni]
   omnid status
   omnid down
 
@@ -66,6 +67,8 @@ func cmdUp(args []string) error {
 	iface := fs.String("iface", "omni0", "nom de l'interface WireGuard")
 	port := fs.Int("port", 41641, "port d'écoute UDP WireGuard")
 	statePath := fs.String("state", defaultStatePath(), "fichier d'identité de la machine")
+	dnsOn := fs.Bool("dns", true, "activer le DNS interne sur l'adresse overlay")
+	dnsZone := fs.String("dns-zone", "omni", "zone du DNS interne (<machine>.<zone>)")
 	fs.Parse(args)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -78,6 +81,8 @@ func cmdUp(args []string) error {
 		Iface:      *iface,
 		ListenPort: *port,
 		StatePath:  *statePath,
+		DNS:        *dnsOn,
+		DNSZone:    *dnsZone,
 	})
 }
 

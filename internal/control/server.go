@@ -38,6 +38,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/poll", s.requireDevice(s.handlePoll))
 	mux.HandleFunc("POST /api/v1/authkeys", s.requireAdmin(s.handleCreateAuthKey))
 	mux.HandleFunc("GET /api/v1/devices", s.requireAdmin(s.handleListDevices))
+	mux.HandleFunc("GET /api/v1/acl", s.requireAdmin(s.handleGetACL))
+	mux.HandleFunc("PUT /api/v1/acl", s.requireAdmin(s.handleSetACL))
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -100,12 +102,18 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, self Device)
 		return
 	}
 
+	// La carte est filtrée par la politique d'accès : une machine ne
+	// connaît que les pairs avec lesquels un échange est autorisé.
+	acl := s.store.ACL()
 	now := time.Now()
 	nm := types.NetMap{Self: peerView(self, now)}
 	nm.Self.Online = true
 	for _, d := range s.store.Devices() {
 		if d.PublicKey == self.PublicKey {
 			nm.Self = peerView(d, now)
+			continue
+		}
+		if !acl.Visible(self, d) {
 			continue
 		}
 		nm.Peers = append(nm.Peers, peerView(d, now))
@@ -131,6 +139,33 @@ func (s *Server) handleListDevices(w http.ResponseWriter, _ *http.Request) {
 		peers = append(peers, peerView(d, now))
 	}
 	writeJSON(w, http.StatusOK, peers)
+}
+
+func (s *Server) handleGetACL(w http.ResponseWriter, _ *http.Request) {
+	acl := s.store.ACL()
+	if acl == nil {
+		acl = &ACLPolicy{}
+	}
+	writeJSON(w, http.StatusOK, acl)
+}
+
+func (s *Server) handleSetACL(w http.ResponseWriter, r *http.Request) {
+	var p ACLPolicy
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeError(w, http.StatusBadRequest, "corps JSON invalide")
+		return
+	}
+	if err := p.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.store.SetACL(&p); err != nil {
+		log.Printf("acl: %v", err)
+		writeError(w, http.StatusInternalServerError, "erreur interne")
+		return
+	}
+	log.Printf("politique d'accès mise à jour (%d règle(s))", len(p.Rules))
+	writeJSON(w, http.StatusOK, &p)
 }
 
 func peerView(d Device, now time.Time) types.Peer {

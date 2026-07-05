@@ -7,10 +7,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"time"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/dnssrv"
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/types"
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/wgnet"
 )
@@ -26,6 +28,8 @@ type Options struct {
 	Iface      string
 	ListenPort int
 	StatePath  string
+	DNS        bool   // activer le DNS interne sur l'adresse overlay
+	DNSZone    string // zone interne, ex: "omni"
 }
 
 // Up enregistre la machine si nécessaire, monte l'interface WireGuard et
@@ -80,6 +84,19 @@ func Up(ctx context.Context, opts Options) error {
 	}
 	log.Printf("interface %s active (%s)", st.Iface, st.IP)
 
+	// DNS interne : résout <machine>.<zone> vers les adresses overlay.
+	var dnsSrv *dnssrv.Server
+	if opts.DNS {
+		dnsSrv = dnssrv.New(opts.DNSZone)
+		addr := net.JoinHostPort(st.IP, "53")
+		go func() {
+			if err := dnsSrv.ListenAndServe(ctx, addr); err != nil && ctx.Err() == nil {
+				log.Printf("dns interne désactivé (%v)", err)
+			}
+		}()
+		log.Printf("dns interne sur %s (zone %s)", addr, dnsSrv.Zone())
+	}
+
 	client := NewClient(st.ServerURL, st.DeviceToken)
 	sync := func() {
 		nm, err := client.Poll(st.ListenPort)
@@ -90,6 +107,9 @@ func Up(ctx context.Context, opts Options) error {
 		if err := wgnet.Configure(st.Iface, priv, st.ListenPort, nm.Peers); err != nil {
 			log.Printf("configuration wireguard: %v", err)
 			return
+		}
+		if dnsSrv != nil {
+			dnsSrv.Update(nm)
 		}
 		logNetMapChange(nm)
 	}

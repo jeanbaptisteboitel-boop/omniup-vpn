@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -22,9 +23,10 @@ import (
 const usage = `omni-server — serveur de coordination OmniUp VPN
 
 Usage :
-  omni-server serve   [--addr :8080] [--state ./omni-server.json]
+  omni-server serve   [--addr :8080] [--state ./omni-server.json] [--tls-cert PEM --tls-key PEM]
   omni-server genkey  [--server URL] [--admin-key CLÉ] [--reusable]
   omni-server devices [--server URL] [--admin-key CLÉ]
+  omni-server acl     [--server URL] [--admin-key CLÉ] [--set politique.json]
 
 La clé admin est affichée au premier démarrage du serveur ; elle peut aussi
 être fournie via la variable d'environnement OMNIUP_ADMIN_KEY.
@@ -44,6 +46,8 @@ func main() {
 		err = cmdGenkey(os.Args[2:])
 	case "devices":
 		err = cmdDevices(os.Args[2:])
+	case "acl":
+		err = cmdACL(os.Args[2:])
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -57,7 +61,13 @@ func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", ":8080", "adresse d'écoute HTTP")
 	statePath := fs.String("state", "./omni-server.json", "fichier d'état du serveur")
+	tlsCert := fs.String("tls-cert", "", "certificat TLS (PEM) — active HTTPS")
+	tlsKey := fs.String("tls-key", "", "clé privée TLS (PEM)")
 	fs.Parse(args)
+
+	if (*tlsCert == "") != (*tlsKey == "") {
+		return fmt.Errorf("--tls-cert et --tls-key vont ensemble")
+	}
 
 	store, adminCreated, err := control.OpenStore(*statePath)
 	if err != nil {
@@ -73,7 +83,12 @@ func cmdServe(args []string) error {
 		Handler:           control.NewServer(store).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	if *tlsCert != "" {
+		log.Printf("serveur de coordination à l'écoute sur %s en HTTPS (réseau %s)", *addr, control.NetworkCIDR)
+		return srv.ListenAndServeTLS(*tlsCert, *tlsKey)
+	}
 	log.Printf("serveur de coordination à l'écoute sur %s (réseau %s)", *addr, control.NetworkCIDR)
+	log.Printf("attention : HTTP en clair — utilisez --tls-cert/--tls-key ou un reverse proxy TLS en production")
 	return srv.ListenAndServe()
 }
 
@@ -86,7 +101,7 @@ func cmdGenkey(args []string) error {
 
 	var resp types.AuthKeyResponse
 	url := fmt.Sprintf("%s/api/v1/authkeys?reusable=%t", *server, *reusable)
-	if err := adminCall("POST", url, *adminKey, &resp); err != nil {
+	if err := adminCall("POST", url, *adminKey, nil, &resp); err != nil {
 		return err
 	}
 	fmt.Println(resp.Key)
@@ -100,7 +115,7 @@ func cmdDevices(args []string) error {
 	fs.Parse(args)
 
 	var peers []types.Peer
-	if err := adminCall("GET", *server+"/api/v1/devices", *adminKey, &peers); err != nil {
+	if err := adminCall("GET", *server+"/api/v1/devices", *adminKey, nil, &peers); err != nil {
 		return err
 	}
 
@@ -120,11 +135,46 @@ func cmdDevices(args []string) error {
 	return tw.Flush()
 }
 
-func adminCall(method, url, adminKey string, out any) error {
+// cmdACL affiche la politique d'accès courante, ou la remplace avec --set.
+func cmdACL(args []string) error {
+	fs := flag.NewFlagSet("acl", flag.ExitOnError)
+	server := fs.String("server", "http://127.0.0.1:8080", "URL du serveur de coordination")
+	adminKey := fs.String("admin-key", os.Getenv("OMNIUP_ADMIN_KEY"), "clé admin du serveur")
+	setFile := fs.String("set", "", "fichier JSON de politique à appliquer")
+	fs.Parse(args)
+
+	var policy control.ACLPolicy
+	if *setFile != "" {
+		data, err := os.ReadFile(*setFile)
+		if err != nil {
+			return err
+		}
+		if err := adminCall("PUT", *server+"/api/v1/acl", *adminKey, bytes.NewReader(data), &policy); err != nil {
+			return err
+		}
+		fmt.Printf("politique appliquée (%d règle(s))\n", len(policy.Rules))
+		return nil
+	}
+
+	if err := adminCall("GET", *server+"/api/v1/acl", *adminKey, nil, &policy); err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(policy, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	if len(policy.Rules) == 0 {
+		fmt.Println("(aucune règle : tout le trafic est autorisé)")
+	}
+	return nil
+}
+
+func adminCall(method, url, adminKey string, body io.Reader, out any) error {
 	if adminKey == "" {
 		return fmt.Errorf("clé admin requise (--admin-key ou OMNIUP_ADMIN_KEY)")
 	}
-	req, err := http.NewRequest(method, url, bytes.NewReader(nil))
+	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return err
 	}

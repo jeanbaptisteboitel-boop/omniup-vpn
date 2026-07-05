@@ -102,25 +102,86 @@ ping 100.64.0.2                          # trafic chiffré direct via WireGuard
 | Méthode | Chemin | Auth | Description |
 |---|---|---|---|
 | `POST` | `/api/v1/register` | clé d'enrôlement (corps) | Enrôle une machine, attribue une IP |
-| `POST` | `/api/v1/poll` | `Bearer` jeton machine | Heartbeat + carte du réseau |
+| `POST` | `/api/v1/poll` | `Bearer` jeton machine | Heartbeat + carte du réseau (filtrée par les ACLs) |
 | `POST` | `/api/v1/authkeys` | `Bearer` clé admin | Crée une clé d'enrôlement (`?reusable=true`) |
 | `GET` | `/api/v1/devices` | `Bearer` clé admin | Liste des machines |
+| `GET` | `/api/v1/acl` | `Bearer` clé admin | Politique d'accès courante |
+| `PUT` | `/api/v1/acl` | `Bearer` clé admin | Remplace la politique d'accès |
 | `GET` | `/healthz` | — | Sonde de vie |
+
+## HTTPS
+
+Le serveur sert du HTTPS nativement avec un certificat fourni :
+
+```sh
+./bin/omni-server serve --addr :443 --tls-cert cert.pem --tls-key key.pem
+```
+
+Sans certificat, il écoute en HTTP clair (un avertissement est journalisé) :
+réservez ce mode au développement ou placez un reverse proxy TLS devant.
+
+## ACLs — qui parle à qui
+
+Par défaut, toutes les machines se voient. Dès qu'une politique contient des
+règles, tout ce qui n'est pas explicitement autorisé est refusé. Chaque règle
+autorise `src → dst` ; les entrées sont des noms de machines, des IP du
+réseau, ou `*`.
+
+```sh
+cat > politique.json <<'EOF'
+{
+  "rules": [
+    { "src": ["portable-jb"], "dst": ["serveur-nas", "100.64.0.7"] },
+    { "src": ["*"],           "dst": ["serveur-web"] }
+  ]
+}
+EOF
+./bin/omni-server acl --server http://SERVEUR:8080 --set politique.json
+./bin/omni-server acl --server http://SERVEUR:8080   # affiche la politique
+```
+
+L'application est faite côté serveur en filtrant la carte des pairs : une
+machine ne reçoit jamais les clés ni les endpoints des pairs avec lesquels
+aucun échange n'est autorisé (comme Tailscale). Si un sens est autorisé, les
+deux machines se connaissent (le tunnel WireGuard est bidirectionnel).
+
+## DNS interne (équivalent MagicDNS)
+
+Chaque agent embarque un petit serveur DNS qui écoute sur son adresse
+overlay (port 53) et résout `<machine>.omni` à partir de la carte du réseau :
+
+```sh
+dig @100.64.0.1 beta.omni     # → 100.64.0.2
+```
+
+Pour l'utiliser de façon transparente, pointez le résolveur du système vers
+l'interface (exemple avec systemd-resolved) :
+
+```sh
+resolvectl dns omni0 100.64.0.1      # l'adresse overlay de la machine
+resolvectl domain omni0 '~omni'
+ping beta.omni
+```
+
+Désactivable avec `omnid up --dns=false` ; zone configurable via
+`--dns-zone`. Les noms sont normalisés en labels DNS valides
+(« Mon PC » → `mon-pc`).
 
 ## Limites actuelles et feuille de route
 
 Ce MVP couvre le cœur du modèle Tailscale (coordination + WireGuard direct).
 Les prochaines étapes, par ordre de priorité :
 
-- [ ] **HTTPS** sur le plan de contrôle (TLS natif ou reverse proxy) — en
-      attendant, ne pas exposer le serveur en HTTP clair sur Internet
+- [x] **HTTPS** sur le plan de contrôle (`--tls-cert`/`--tls-key`, ou
+      reverse proxy)
+- [x] **ACLs** : politique d'accès entre machines (qui parle à qui)
+- [x] **DNS interne** (équivalent MagicDNS) : `alpha.omni` → `100.64.0.1`
 - [ ] **Traversée NAT** : découverte d'endpoint par STUN, perçage UDP
       coordonné (le mécanisme actuel — IP source HTTP + port déclaré — ne
-      fonctionne pas derrière un NAT symétrique)
+      fonctionne pas derrière un NAT symétrique) ; nécessite de passer à
+      WireGuard userspace pour contrôler la socket UDP
 - [ ] **Relais** type DERP pour les paires de machines qui ne peuvent pas
       établir de connexion directe
-- [ ] **ACLs** : politique d'accès entre machines (qui parle à qui)
-- [ ] **DNS interne** (équivalent MagicDNS) : `alpha.omni` → `100.64.0.1`
 - [ ] Élargir l'IPAM à `100.64.0.0/10`, expiration des clés, révocation de
       machines, rotation des jetons
 - [ ] Support macOS/Windows via wireguard-go (userspace)
@@ -141,5 +202,6 @@ cmd/omnid/          binaire agent (up / status / down)
 internal/types/     structures de l'API agent ↔ serveur
 internal/control/   serveur : store persistant, IPAM, handlers HTTP
 internal/agent/     agent : client API, identité persistée, boucle de synchro
+internal/dnssrv/    DNS interne (<machine>.omni)
 internal/wgnet/     interface WireGuard (netlink + wgctrl)
 ```

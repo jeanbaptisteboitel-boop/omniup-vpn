@@ -50,6 +50,7 @@ type stateFile struct {
 	AdminKey string             `json:"admin_key"`
 	AuthKeys []*AuthKey         `json:"auth_keys"`
 	Devices  map[string]*Device `json:"devices"` // indexées par clé publique
+	ACL      *ACLPolicy         `json:"acl,omitempty"`
 }
 
 // Store conserve l'état du serveur (machines, clés) et le persiste en JSON.
@@ -202,6 +203,21 @@ func (st *Store) Devices() []Device {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].IP < out[j].IP })
 	return out
+}
+
+// ACL renvoie une copie de la politique d'accès courante (nil = tout autorisé).
+func (st *Store) ACL() *ACLPolicy {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.s.ACL.clone()
+}
+
+// SetACL remplace la politique d'accès.
+func (st *Store) SetACL(p *ACLPolicy) error {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.s.ACL = p.clone()
+	return st.saveLocked()
 }
 
 // allocateIPLocked attribue la première adresse libre de la plage.
