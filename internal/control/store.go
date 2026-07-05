@@ -57,6 +57,7 @@ type Device struct {
 // AuthKey est une clé de pré-authentification permettant d'enrôler une machine.
 type AuthKey struct {
 	Key       string    `json:"key"`
+	Owner     string    `json:"owner,omitempty"` // les machines enrôlées lui sont rattachées
 	Reusable  bool      `json:"reusable"`
 	Used      bool      `json:"used"`
 	CreatedAt time.Time `json:"created_at"`
@@ -64,11 +65,14 @@ type AuthKey struct {
 }
 
 type stateFile struct {
-	AdminKey string             `json:"admin_key"`
-	CIDR     string             `json:"cidr,omitempty"`
-	AuthKeys []*AuthKey         `json:"auth_keys"`
-	Devices  map[string]*Device `json:"devices"` // indexées par clé publique
-	ACL      *ACLPolicy         `json:"acl,omitempty"`
+	AdminKey string                 `json:"admin_key"`
+	CIDR     string                 `json:"cidr,omitempty"`
+	AuthKeys []*AuthKey             `json:"auth_keys"`
+	Devices  map[string]*Device     `json:"devices"` // indexées par clé publique
+	ACL      *ACLPolicy             `json:"acl,omitempty"`
+	Users    map[string]*User       `json:"users,omitempty"`    // indexés par e-mail
+	Invites  []*Invite              `json:"invites,omitempty"`
+	Sessions map[string]*WebSession `json:"sessions,omitempty"` // indexées par jeton
 }
 
 // Store conserve l'état du serveur (machines, clés) et le persiste en JSON.
@@ -140,10 +144,17 @@ func (st *Store) AdminKey() string {
 // CreateAuthKey génère une nouvelle clé de pré-authentification.
 // ttl = 0 : la clé n'expire jamais.
 func (st *Store) CreateAuthKey(reusable bool, ttl time.Duration) (*AuthKey, error) {
+	return st.CreateAuthKeyFor("", reusable, ttl)
+}
+
+// CreateAuthKeyFor génère une clé de pré-authentification rattachée à un
+// utilisateur : les machines enrôlées avec elle lui appartiendront.
+func (st *Store) CreateAuthKeyFor(owner string, reusable bool, ttl time.Duration) (*AuthKey, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	k := &AuthKey{
 		Key:       "omkey-" + randomHex(24),
+		Owner:     owner,
 		Reusable:  reusable,
 		CreatedAt: time.Now().UTC(),
 	}
@@ -199,7 +210,7 @@ func (st *Store) RegisterDevice(authKey, hostname, publicKey string) (*Device, e
 		return nil, ErrInvalidAuthKey
 	}
 
-	d, err := st.createDeviceLocked(hostname, publicKey, "")
+	d, err := st.createDeviceLocked(hostname, publicKey, key.Owner)
 	if err != nil {
 		return nil, err
 	}

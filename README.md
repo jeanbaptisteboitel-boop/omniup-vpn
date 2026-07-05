@@ -235,6 +235,28 @@ sans filtre, tout compte vérifié du fournisseur est accepté (un
 avertissement est journalisé). Les clés `--auth-key` restent utilisables
 en parallèle.
 
+## Espace utilisateur (`/portal`)
+
+Chaque utilisateur du VPN crée son compte sur `https://SERVEUR/portal`
+(la racine y redirige) puis connecte ses machines en autonomie :
+
+1. **Inscription** avec un code d'invitation fourni par l'administrateur
+   (`omni-server invite`, valable 7 jours par défaut) — ou librement si
+   le serveur tourne avec `--registration open`. Mot de passe haché en
+   bcrypt, session par cookie (7 jours).
+2. **Connecter une machine** : le portail génère une clé d'enrôlement au
+   nom de l'utilisateur (24 h) et affiche la commande à copier pour
+   Linux, macOS ou Windows, serveur et clé déjà renseignés.
+3. **Mes machines** : chaque utilisateur voit uniquement *ses* machines
+   (état en ligne, IP, dernière activité) et peut les retirer du réseau.
+   Une machine enrôlée avec une clé d'utilisateur — ou via SSO — lui est
+   rattachée ; l'administrateur voit tout dans `/admin` et
+   `omni-server devices` (colonne propriétaire).
+
+API : `POST /api/v1/users/register|login|logout`, `GET /api/v1/users/me`,
+`POST /api/v1/users/authkeys`, `DELETE /api/v1/users/devices/{cible}`,
+et côté admin `POST/GET /api/v1/invites`.
+
 ## Console web d'administration
 
 Le serveur embarque une console à l'adresse `http://SERVEUR:8080/admin`
@@ -329,6 +351,9 @@ Les prochaines étapes, par ordre de priorité :
       grâce d'une heure pour l'ancien jeton)
 - [x] **Console web d'administration** embarquée (`/admin`) : machines,
       clés d'enrôlement, ACLs, révocation
+- [x] **Comptes utilisateurs et espace personnel** (`/portal`) :
+      inscription sur invitation (ou ouverte), chaque utilisateur
+      connecte et gère ses propres machines
 - [x] **Support macOS et Windows** de l'agent (utun + ifconfig/route sur
       macOS, Wintun + netsh sur Windows, pipe nommé UAPI ; binaires dans
       chaque release)

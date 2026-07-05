@@ -138,7 +138,21 @@ Dans `omnid status`, la colonne « via » dit tout :
 
 La console `/admin` montre les machines passer « en ligne » en ~10 s.
 
-## 7. (Optionnel) Enrôlement SSO avec Google
+## 7. Ouvrir le réseau à d'autres utilisateurs
+
+Chaque utilisateur crée son compte sur `https://vpn.omniup.fr/portal` avec
+un code d'invitation, puis connecte ses machines lui-même (le portail lui
+donne la commande complète) :
+
+```sh
+# sur le VPS, pour chaque personne à inviter :
+omni-server invite     # → ominv-… , valable 7 jours
+```
+
+Ses machines lui sont rattachées : il ne voit et ne gère que les siennes,
+vous gardez la vue complète dans `/admin`.
+
+## 8. (Optionnel) Enrôlement SSO avec Google
 
 Pour enrôler les machines en s'authentifiant avec un compte Google plutôt
 qu'avec des clés :

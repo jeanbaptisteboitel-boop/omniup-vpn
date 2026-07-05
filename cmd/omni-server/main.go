@@ -35,6 +35,7 @@ Usage :
   omni-server serve   [--addr :8080] [--state ./omni-server.json] [--cidr 100.64.0.0/24]
                       [--tls-cert PEM --tls-key PEM] [--stun-addr :3478] [--relay-addr :3479]
   omni-server genkey  [--server URL] [--admin-key CLÉ] [--reusable] [--expiry 24h]
+  omni-server invite  [--server URL] [--admin-key CLÉ] [--expiry 168h]
   omni-server devices [--server URL] [--admin-key CLÉ]
   omni-server revoke  [--server URL] [--admin-key CLÉ] MACHINE (ip, nom ou id)
   omni-server acl     [--server URL] [--admin-key CLÉ] [--set politique.json]
@@ -59,6 +60,8 @@ func main() {
 		err = cmdDevices(os.Args[2:])
 	case "revoke":
 		err = cmdRevoke(os.Args[2:])
+	case "invite":
+		err = cmdInvite(os.Args[2:])
 	case "acl":
 		err = cmdACL(os.Args[2:])
 	case "version":
@@ -87,7 +90,12 @@ func cmdServe(args []string) error {
 	publicURL := fs.String("public-url", "", "URL publique du serveur, ex: https://vpn.omniup.fr (requis pour le SSO)")
 	oidcDomain := fs.String("oidc-allowed-domain", "", "n'autoriser que les e-mails de ce domaine")
 	oidcEmails := fs.String("oidc-allowed-emails", "", "n'autoriser que ces e-mails (séparés par des virgules)")
+	registration := fs.String("registration", "invite", "inscription au portail : \"invite\" (code requis) ou \"open\"")
 	fs.Parse(args)
+
+	if *registration != "invite" && *registration != "open" {
+		return fmt.Errorf("--registration doit valoir \"invite\" ou \"open\"")
+	}
 
 	if (*tlsCert == "") != (*tlsKey == "") {
 		return fmt.Errorf("--tls-cert et --tls-key vont ensemble")
@@ -136,6 +144,10 @@ func cmdServe(args []string) error {
 	}
 
 	api := control.NewServer(store)
+	api.SetOpenRegistration(*registration == "open")
+	if *registration == "open" {
+		log.Printf("attention : inscription au portail ouverte sans invitation (--registration open)")
+	}
 	if *oidcIssuer != "" {
 		var emails []string
 		for _, e := range strings.Split(*oidcEmails, ",") {
@@ -220,6 +232,26 @@ func cmdDevices(args []string) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", p.IP, p.Hostname, owner, state, p.Endpoint, last)
 	}
 	return tw.Flush()
+}
+
+// cmdInvite crée un code d'invitation pour l'inscription au portail.
+func cmdInvite(args []string) error {
+	fs := flag.NewFlagSet("invite", flag.ExitOnError)
+	server := fs.String("server", "http://127.0.0.1:8080", "URL du serveur de coordination")
+	adminKey := fs.String("admin-key", os.Getenv("OMNIUP_ADMIN_KEY"), "clé admin du serveur")
+	expiry := fs.Duration("expiry", 7*24*time.Hour, "durée de vie de l'invitation (0 : sans expiration)")
+	fs.Parse(args)
+
+	var resp types.InviteResponse
+	url := fmt.Sprintf("%s/api/v1/invites?ttl=%s", *server, neturl.QueryEscape(expiry.String()))
+	if err := adminCall("POST", url, *adminKey, nil, &resp); err != nil {
+		return err
+	}
+	fmt.Println(resp.Code)
+	if !resp.ExpiresAt.IsZero() {
+		fmt.Fprintf(os.Stderr, "expire le %s\n", resp.ExpiresAt.Local().Format("2006-01-02 15:04:05"))
+	}
+	return nil
 }
 
 // cmdRevoke retire une machine du réseau (par IP, nom ou id).

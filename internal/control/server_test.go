@@ -387,15 +387,25 @@ func TestWebUIServed(t *testing.T) {
 		t.Fatal("la console devrait contenir le titre attendu")
 	}
 
-	// La racine redirige vers /admin.
+	// L'espace utilisateur est servi aussi.
+	resp3, err := http.Get(ts.URL + "/portal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp3.Body.Close()
+	if resp3.StatusCode != http.StatusOK {
+		t.Fatalf("/portal: HTTP %d", resp3.StatusCode)
+	}
+
+	// La racine redirige vers l'espace utilisateur.
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	resp2, err := client.Get(ts.URL + "/")
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusFound || resp2.Header.Get("Location") != "/admin" {
-		t.Fatalf("la racine devrait rediriger vers /admin: %d %s", resp2.StatusCode, resp2.Header.Get("Location"))
+	if resp2.StatusCode != http.StatusFound || resp2.Header.Get("Location") != "/portal" {
+		t.Fatalf("la racine devrait rediriger vers /portal: %d %s", resp2.StatusCode, resp2.Header.Get("Location"))
 	}
 }
 

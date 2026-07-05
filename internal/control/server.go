@@ -25,13 +25,17 @@ import (
 //   POST /api/v1/authkeys  — création d'une clé de pré-authentification
 //   GET  /api/v1/devices   — liste des machines
 type Server struct {
-	store *Store
-	oidc  *oidcProvider // nil : enrôlement SSO désactivé
+	store            *Store
+	oidc             *oidcProvider // nil : enrôlement SSO désactivé
+	openRegistration bool          // faux : un code d'invitation est exigé
 }
 
 func NewServer(store *Store) *Server {
 	return &Server{store: store}
 }
+
+// SetOpenRegistration ouvre l'inscription au portail sans invitation.
+func (s *Server) SetOpenRegistration(open bool) { s.openRegistration = open }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -51,6 +55,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	s.registerUserRoutes(mux)
 	registerWebUI(mux)
 	return mux
 }

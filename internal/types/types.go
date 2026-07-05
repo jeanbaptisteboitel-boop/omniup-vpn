@@ -87,6 +87,39 @@ type InfoResponse struct {
 	OnlineCount int    `json:"online_count"`
 }
 
+// UserRegisterRequest crée un compte utilisateur sur le portail.
+type UserRegisterRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+	Invite   string `json:"invite,omitempty"`
+}
+
+// UserLoginRequest ouvre une session sur le portail.
+type UserLoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+// UserProfile est le profil renvoyé à un utilisateur connecté.
+type UserProfile struct {
+	Email    string `json:"email"`
+	Machines []Peer `json:"machines"`
+}
+
+// InviteResponse est renvoyée à la création d'un code d'invitation.
+type InviteResponse struct {
+	Code      string    `json:"code"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+}
+
+// InviteInfo décrit un code d'invitation existant (masqué).
+type InviteInfo struct {
+	CodeMasked string    `json:"code_masked"`
+	Used       bool      `json:"used"`
+	CreatedAt  time.Time `json:"created_at"`
+	ExpiresAt  time.Time `json:"expires_at,omitzero"`
+}
+
 // ErrorResponse est le format d'erreur JSON de l'API.
 type ErrorResponse struct {
 	Error string `json:"error"`
