@@ -103,11 +103,23 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, self Device)
 		return
 	}
 
+	// Rotation périodique du jeton : le nouveau jeton part dans la
+	// réponse, l'ancien reste toléré le temps d'une période de grâce.
+	newToken, err := s.store.RotateTokenIfDue(self.PublicKey)
+	if err != nil {
+		log.Printf("poll: rotation du jeton: %v", err)
+		writeError(w, http.StatusInternalServerError, "erreur interne")
+		return
+	}
+	if newToken != "" {
+		log.Printf("jeton renouvelé pour %s (%s)", self.Hostname, self.IP)
+	}
+
 	// La carte est filtrée par la politique d'accès : une machine ne
 	// connaît que les pairs avec lesquels un échange est autorisé.
 	acl := s.store.ACL()
 	now := time.Now()
-	nm := types.NetMap{Self: peerView(self, now)}
+	nm := types.NetMap{Self: peerView(self, now), NewToken: newToken}
 	nm.Self.Online = true
 	for _, d := range s.store.Devices() {
 		if d.PublicKey == self.PublicKey {
@@ -124,13 +136,22 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, self Device)
 
 func (s *Server) handleCreateAuthKey(w http.ResponseWriter, r *http.Request) {
 	reusable := r.URL.Query().Get("reusable") == "true"
-	k, err := s.store.CreateAuthKey(reusable)
+	ttl := 24 * time.Hour // défaut : une clé d'enrôlement vit un jour
+	if v := r.URL.Query().Get("ttl"); v != "" {
+		parsed, err := time.ParseDuration(v)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "ttl invalide (ex: 24h, 30m, 0 pour sans expiration)")
+			return
+		}
+		ttl = parsed
+	}
+	k, err := s.store.CreateAuthKey(reusable, ttl)
 	if err != nil {
 		log.Printf("authkeys: %v", err)
 		writeError(w, http.StatusInternalServerError, "erreur interne")
 		return
 	}
-	writeJSON(w, http.StatusOK, types.AuthKeyResponse{Key: k.Key, Reusable: k.Reusable})
+	writeJSON(w, http.StatusOK, types.AuthKeyResponse{Key: k.Key, Reusable: k.Reusable, ExpiresAt: k.ExpiresAt})
 }
 
 func (s *Server) handleListDevices(w http.ResponseWriter, _ *http.Request) {

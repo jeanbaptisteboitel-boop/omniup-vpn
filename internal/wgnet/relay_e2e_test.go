@@ -40,7 +40,9 @@ func TestTunnelViaRelay(t *testing.T) {
 			t.Fatal(err)
 		}
 		bind := omnisock.New()
-		bind.ConfigureRelay(relayAP, [32]byte(priv.PublicKey()))
+		if err := bind.ConfigureRelay(relayAP, [32]byte(priv)); err != nil {
+			t.Fatal(err)
+		}
 		dev, err := StartWithTUN(tunDev, name, priv, 0, bind, false)
 		if err != nil {
 			t.Fatal(err)

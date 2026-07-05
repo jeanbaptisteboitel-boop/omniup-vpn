@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/curve25519"
 	"golang.zx2c4.com/wireguard/conn"
 
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/relay"
@@ -39,7 +40,10 @@ type Bind struct {
 	closed bool
 
 	// Relais de secours : les endpoints "relay:<clé>" passent par lui.
+	// L'enregistrement est authentifié par défi-réponse ECDH, d'où la
+	// clé privée (celle de WireGuard — Curve25519 également).
 	relayAddr    netip.AddrPort
+	relayPriv    [32]byte
 	relaySelfKey [32]byte
 	relayLastAck time.Time
 }
@@ -105,6 +109,18 @@ func (b *Bind) receive(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, er
 				b.mu.Lock()
 				b.relayLastAck = time.Now()
 				b.mu.Unlock()
+			case relay.TypeChallenge:
+				// Preuve de possession de notre clé privée (ECDH + HMAC).
+				if relayPub, nonce, ok := relay.ParseChallenge(pkt); ok {
+					b.mu.Lock()
+					priv, addr := b.relayPriv, b.relayAddr
+					b.mu.Unlock()
+					if addr.IsValid() && src == addr {
+						if proof, err := relay.BuildProof(priv, relayPub, nonce); err == nil {
+							_ = b.writeTo(proof, addr)
+						}
+					}
+				}
 			case relay.TypeRecv:
 				srcKey, payload, ok := relay.ParseKeyed(pkt)
 				if ok && len(payload) > 0 && len(payload) <= len(bufs[0]) {
@@ -122,12 +138,20 @@ func (b *Bind) receive(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, er
 	}
 }
 
-// ConfigureRelay active le relais de secours pour cette socket.
-func (b *Bind) ConfigureRelay(addr netip.AddrPort, selfKey [32]byte) {
+// ConfigureRelay active le relais de secours pour cette socket. privKey
+// est la clé privée WireGuard de la machine : elle sert à répondre aux
+// défis d'authentification du relais (et ne quitte jamais ce processus).
+func (b *Bind) ConfigureRelay(addr netip.AddrPort, privKey [32]byte) error {
+	pub, err := curve25519.X25519(privKey[:], curve25519.Basepoint)
+	if err != nil {
+		return err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.relayAddr = addr
-	b.relaySelfKey = selfKey
+	b.relayPriv = privKey
+	copy(b.relaySelfKey[:], pub)
+	return nil
 }
 
 // RelayRegister (ré)enregistre notre clé auprès du relais — à appeler

@@ -29,17 +29,28 @@ var (
 	ErrIPExhausted    = errors.New("plage d'adresses IP épuisée")
 )
 
+// TokenRotateAfter : âge au-delà duquel le jeton d'une machine est
+// renouvelé au poll suivant (variable pour les tests).
+var TokenRotateAfter = 24 * time.Hour
+
+// tokenGrace : durée pendant laquelle l'ancien jeton reste accepté après
+// une rotation, au cas où la réponse portant le nouveau jeton se perde.
+const tokenGrace = time.Hour
+
 // Device est une machine enregistrée sur le réseau.
 type Device struct {
-	ID        string    `json:"id"`
-	Hostname  string    `json:"hostname"`
-	PublicKey string    `json:"public_key"`
-	Token     string    `json:"token"`
-	IP        string    `json:"ip"`
-	Endpoint  string    `json:"endpoint,omitempty"`  // observé par le serveur
-	Endpoints []string  `json:"endpoints,omitempty"` // candidats rapportés par l'agent
-	CreatedAt time.Time `json:"created_at"`
-	LastSeen  time.Time `json:"last_seen"`
+	ID             string    `json:"id"`
+	Hostname       string    `json:"hostname"`
+	PublicKey      string    `json:"public_key"`
+	Token          string    `json:"token"`
+	TokenIssuedAt  time.Time `json:"token_issued_at,omitempty"`
+	PrevToken      string    `json:"prev_token,omitempty"`
+	PrevTokenUntil time.Time `json:"prev_token_until,omitempty"`
+	IP             string    `json:"ip"`
+	Endpoint       string    `json:"endpoint,omitempty"`  // observé par le serveur
+	Endpoints      []string  `json:"endpoints,omitempty"` // candidats rapportés par l'agent
+	CreatedAt      time.Time `json:"created_at"`
+	LastSeen       time.Time `json:"last_seen"`
 }
 
 // AuthKey est une clé de pré-authentification permettant d'enrôler une machine.
@@ -48,6 +59,7 @@ type AuthKey struct {
 	Reusable  bool      `json:"reusable"`
 	Used      bool      `json:"used"`
 	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"` // zéro : n'expire jamais
 }
 
 type stateFile struct {
@@ -125,13 +137,17 @@ func (st *Store) AdminKey() string {
 }
 
 // CreateAuthKey génère une nouvelle clé de pré-authentification.
-func (st *Store) CreateAuthKey(reusable bool) (*AuthKey, error) {
+// ttl = 0 : la clé n'expire jamais.
+func (st *Store) CreateAuthKey(reusable bool, ttl time.Duration) (*AuthKey, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	k := &AuthKey{
 		Key:       "omkey-" + randomHex(24),
 		Reusable:  reusable,
 		CreatedAt: time.Now().UTC(),
+	}
+	if ttl > 0 {
+		k.ExpiresAt = k.CreatedAt.Add(ttl)
 	}
 	st.s.AuthKeys = append(st.s.AuthKeys, k)
 	if err := st.saveLocked(); err != nil {
@@ -161,7 +177,8 @@ func (st *Store) RegisterDevice(authKey, hostname, publicKey string) (*Device, e
 
 	var key *AuthKey
 	for _, k := range st.s.AuthKeys {
-		if k.Key == authKey && (k.Reusable || !k.Used) {
+		if k.Key == authKey && (k.Reusable || !k.Used) &&
+			(k.ExpiresAt.IsZero() || time.Now().Before(k.ExpiresAt)) {
 			key = k
 			break
 		}
@@ -176,12 +193,13 @@ func (st *Store) RegisterDevice(authKey, hostname, publicKey string) (*Device, e
 	}
 
 	d := &Device{
-		ID:        randomHex(8),
-		Hostname:  hostname,
-		PublicKey: publicKey,
-		Token:     "omtok-" + randomHex(24),
-		IP:        ip,
-		CreatedAt: time.Now().UTC(),
+		ID:            randomHex(8),
+		Hostname:      hostname,
+		PublicKey:     publicKey,
+		Token:         "omtok-" + randomHex(24),
+		TokenIssuedAt: time.Now().UTC(),
+		IP:            ip,
+		CreatedAt:     time.Now().UTC(),
 	}
 	key.Used = true
 	st.s.Devices[publicKey] = d
@@ -192,17 +210,46 @@ func (st *Store) RegisterDevice(authKey, hostname, publicKey string) (*Device, e
 	return &cp, nil
 }
 
-// DeviceByToken retrouve une machine par son jeton d'API.
+// DeviceByToken retrouve une machine par son jeton d'API (le jeton
+// précédent reste accepté pendant la période de grâce après rotation).
 func (st *Store) DeviceByToken(token string) (*Device, bool) {
+	if token == "" {
+		return nil, false
+	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	for _, d := range st.s.Devices {
-		if d.Token == token {
+		if d.Token == token ||
+			(d.PrevToken == token && time.Now().Before(d.PrevTokenUntil)) {
 			cp := *d
 			return &cp, true
 		}
 	}
 	return nil, false
+}
+
+// RotateTokenIfDue renouvelle le jeton d'une machine s'il est trop ancien.
+// Renvoie le nouveau jeton, ou "" si aucune rotation n'était due. L'ancien
+// jeton reste valide pendant tokenGrace pour absorber une réponse perdue.
+func (st *Store) RotateTokenIfDue(publicKey string) (string, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	d, ok := st.s.Devices[publicKey]
+	if !ok {
+		return "", errors.New("machine inconnue")
+	}
+	if time.Since(d.TokenIssuedAt) < TokenRotateAfter {
+		return "", nil
+	}
+	now := time.Now().UTC()
+	d.PrevToken = d.Token
+	d.PrevTokenUntil = now.Add(tokenGrace)
+	d.Token = "omtok-" + randomHex(24)
+	d.TokenIssuedAt = now
+	if err := st.saveLocked(); err != nil {
+		return "", err
+	}
+	return d.Token, nil
 }
 
 // TouchDevice met à jour la date de dernière activité, l'endpoint observé

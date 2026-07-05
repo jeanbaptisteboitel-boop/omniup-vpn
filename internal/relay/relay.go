@@ -6,25 +6,41 @@
 //
 // Protocole (UDP, trames préfixées 0xC6 'O' 'M' 'N' 'R') :
 //
-//	REGISTER  client → relais : ma clé publique est joignable à mon adresse source
-//	ACK       relais → client : enregistrement pris en compte
-//	FORWARD   client → relais : fais suivre ce paquet à telle clé publique
-//	RECV      relais → client : paquet reçu de telle clé publique
+//	REGISTER   client → relais : je revendique cette clé publique
+//	CHALLENGE  relais → client : prouve-le (nonce + clé publique du relais)
+//	PROOF      client → relais : HMAC du défi par le secret partagé X25519
+//	ACK        relais → client : enregistrement pris en compte
+//	FORWARD    client → relais : fais suivre ce paquet à telle clé publique
+//	RECV       relais → client : paquet reçu de telle clé publique
+//
+// L'authentification repose sur un défi-réponse ECDH : les clés WireGuard
+// sont des clés Curve25519 (pas de signature possible), mais seul le
+// détenteur de la clé privée peut calculer X25519(priv_client, pub_relais)
+// et donc produire le HMAC attendu. Un usurpateur ne peut ni s'enregistrer
+// sous la clé d'autrui, ni rejouer une preuve (nonce à usage unique).
 package relay
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+
+	"golang.org/x/crypto/curve25519"
 )
 
 const (
 	headerLen = 6  // magic (5) + type (1)
 	keyLen    = 32 // clé publique WireGuard brute
+	nonceLen  = 16
+	macLen    = sha256.Size
 
-	TypeRegister = 0x01
-	TypeAck      = 0x02
-	TypeForward  = 0x03
-	TypeRecv     = 0x04
+	TypeRegister  = 0x01
+	TypeAck       = 0x02
+	TypeForward   = 0x03
+	TypeRecv      = 0x04
+	TypeChallenge = 0x05
+	TypeProof     = 0x06
 )
 
 var magic = []byte{0xC6, 'O', 'M', 'N', 'R'}
@@ -91,6 +107,80 @@ func ParseKeyed(b []byte) (key [keyLen]byte, payload []byte, ok bool) {
 	}
 	copy(key[:], b[headerLen:headerLen+keyLen])
 	return key, b[headerLen+keyLen:], true
+}
+
+// BuildChallenge encode une trame CHALLENGE (clé publique du relais + nonce).
+func BuildChallenge(relayPub [keyLen]byte, nonce [nonceLen]byte) []byte {
+	b := make([]byte, headerLen+keyLen+nonceLen)
+	copy(b, magic)
+	b[5] = TypeChallenge
+	copy(b[headerLen:], relayPub[:])
+	copy(b[headerLen+keyLen:], nonce[:])
+	return b
+}
+
+// ParseChallenge décode une trame CHALLENGE.
+func ParseChallenge(b []byte) (relayPub [keyLen]byte, nonce [nonceLen]byte, ok bool) {
+	if len(b) != headerLen+keyLen+nonceLen {
+		return relayPub, nonce, false
+	}
+	copy(relayPub[:], b[headerLen:])
+	copy(nonce[:], b[headerLen+keyLen:])
+	return relayPub, nonce, true
+}
+
+// BuildProof encode une trame PROOF pour le défi (relayPub, nonce), signée
+// par la clé privée du client.
+func BuildProof(clientPriv, relayPub [keyLen]byte, nonce [nonceLen]byte) ([]byte, error) {
+	clientPub, err := curve25519.X25519(clientPriv[:], curve25519.Basepoint)
+	if err != nil {
+		return nil, err
+	}
+	mac, err := proofMAC(clientPriv[:], relayPub[:], clientPub, nonce)
+	if err != nil {
+		return nil, err
+	}
+	b := make([]byte, headerLen+keyLen+nonceLen+macLen)
+	copy(b, magic)
+	b[5] = TypeProof
+	copy(b[headerLen:], clientPub)
+	copy(b[headerLen+keyLen:], nonce[:])
+	copy(b[headerLen+keyLen+nonceLen:], mac)
+	return b, nil
+}
+
+// ParseProof décode une trame PROOF.
+func ParseProof(b []byte) (clientPub [keyLen]byte, nonce [nonceLen]byte, mac []byte, ok bool) {
+	if len(b) != headerLen+keyLen+nonceLen+macLen {
+		return clientPub, nonce, nil, false
+	}
+	copy(clientPub[:], b[headerLen:])
+	copy(nonce[:], b[headerLen+keyLen:])
+	return clientPub, nonce, b[headerLen+keyLen+nonceLen:], true
+}
+
+// VerifyProof vérifie, côté relais, qu'une preuve correspond bien à la clé
+// publique revendiquée et au nonce du défi.
+func VerifyProof(relayPriv [keyLen]byte, clientPub [keyLen]byte, nonce [nonceLen]byte, mac []byte) bool {
+	expected, err := proofMAC(relayPriv[:], clientPub[:], clientPub[:], nonce)
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(expected, mac)
+}
+
+// proofMAC calcule HMAC-SHA256(X25519(priv, pub), nonce || clientPub) :
+// le secret partagé est identique des deux côtés (ECDH), le message lie la
+// preuve à la clé revendiquée.
+func proofMAC(priv, pub, clientPub []byte, nonce [nonceLen]byte) ([]byte, error) {
+	shared, err := curve25519.X25519(priv, pub)
+	if err != nil {
+		return nil, err
+	}
+	h := hmac.New(sha256.New, shared)
+	h.Write(nonce[:])
+	h.Write(clientPub)
+	return h.Sum(nil), nil
 }
 
 // KeyToB64 encode une clé brute en base64 (format WireGuard usuel).

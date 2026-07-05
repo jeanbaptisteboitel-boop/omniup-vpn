@@ -128,9 +128,12 @@ func Up(ctx context.Context, opts Options) error {
 	if relayServer != "" && relayServer != "off" {
 		if udpAddr, err := net.ResolveUDPAddr("udp4", relayServer); err == nil {
 			ap := udpAddr.AddrPort()
-			bind.ConfigureRelay(netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), [32]byte(priv.PublicKey()))
-			relayEnabled = true
-			log.Printf("relais de secours: %s", relayServer)
+			if err := bind.ConfigureRelay(netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), [32]byte(priv)); err != nil {
+				log.Printf("relais de secours indisponible (%v)", err)
+			} else {
+				relayEnabled = true
+				log.Printf("relais de secours: %s", relayServer)
+			}
 		} else {
 			log.Printf("relais de secours indisponible (%v)", err)
 		}
@@ -180,6 +183,17 @@ func Up(ctx context.Context, opts Options) error {
 		if err != nil {
 			log.Printf("poll: %v", err)
 			return
+		}
+
+		// 2 bis. Rotation du jeton machine décidée par le serveur.
+		if nm.NewToken != "" {
+			st.DeviceToken = nm.NewToken
+			client.Token = nm.NewToken
+			if err := st.Save(opts.StatePath); err != nil {
+				log.Printf("sauvegarde du nouveau jeton: %v", err)
+			} else {
+				log.Printf("jeton machine renouvelé par le serveur")
+			}
 		}
 
 		// 3. Synchronisation des pairs (sans toucher aux endpoints établis).

@@ -63,8 +63,10 @@ export OMNIUP_ADMIN_KEY=omadmin-…
 # → omkey-…
 ```
 
-(`--reusable` permet d'enrôler plusieurs machines avec la même clé ;
-sans ce drapeau la clé est à usage unique.)
+(`--reusable` permet d'enrôler plusieurs machines avec la même clé ; sans
+ce drapeau la clé est à usage unique. Les clés expirent après 24 h par
+défaut — ajustable avec `--expiry 72h`, `--expiry 0` pour ne jamais
+expirer.)
 
 Ouvrez aussi les ports UDP 3478 (STUN, `--stun-addr`) et 3479 (relais de
 secours, `--relay-addr`) vers le serveur — chacun désactivable avec `off`.
@@ -119,8 +121,12 @@ ping 100.64.0.2                          # trafic chiffré direct via WireGuard
 5. **Relais de secours** — si le perçage n'aboutit pas (NAT symétrique des
    deux côtés), le pair bascule sur un endpoint `relay:<clé>` : ses paquets
    WireGuard transitent, toujours chiffrés, par le relais UDP du serveur
-   (équivalent DERP). Les sondes directes continuent en arrière-plan : dès
-   qu'un chemin direct répond, le pair sort du relais automatiquement.
+   (équivalent DERP). L'enregistrement auprès du relais est **authentifié
+   par défi-réponse ECDH** : les clés WireGuard étant des clés Curve25519,
+   le client prouve qu'il détient la clé privée de la clé publique qu'il
+   revendique en MACant un nonce avec le secret partagé X25519 — pas
+   d'usurpation ni de rejeu possibles. Les sondes directes continuent en
+   arrière-plan : dès qu'un chemin direct répond, le pair sort du relais.
 6. **Trafic** — `AllowedIPs = <ip>/32` par pair, keepalive 25 s. Le trafic
    circule **directement** entre machines dès que possible, chiffré de bout
    en bout — ni le serveur de coordination ni le relais ne peuvent le
@@ -218,10 +224,11 @@ Les prochaines étapes, par ordre de priorité :
       bascule automatique et retour au direct dès qu'un chemin perce
 - [x] **IPAM configurable** (`--cidr`, jusqu'à `100.64.0.0/10`) et
       **révocation de machines** (`omni-server revoke`)
-- [ ] Enregistrement authentifié auprès du relais (aujourd'hui : un tiers
-      connaissant une clé publique peut détourner ses trames relayées —
-      sans pouvoir les déchiffrer ; l'impact se limite à un déni de service)
-- [ ] Expiration des clés d'enrôlement, rotation des jetons
+- [x] Enregistrement **authentifié** auprès du relais (défi-réponse ECDH
+      X25519 + HMAC, nonce à usage unique)
+- [x] **Expiration des clés d'enrôlement** (24 h par défaut, `--expiry`)
+      et **rotation automatique des jetons machine** (24 h, période de
+      grâce d'une heure pour l'ancien jeton)
 - [ ] Support macOS/Windows (le moteur userspace rend le portage possible ;
       il reste l'adressage et les routes par plateforme)
 - [ ] SSO/OIDC pour l'enrôlement à la place des clés pré-partagées

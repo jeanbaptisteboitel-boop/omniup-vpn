@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
@@ -159,6 +160,96 @@ func TestAdminAuthRequired(t *testing.T) {
 	}
 }
 
+func TestAuthKeyExpiry(t *testing.T) {
+	store, _, err := OpenStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Clé à durée de vie minuscule : refusée une fois expirée.
+	key, err := store.CreateAuthKey(true, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.ExpiresAt.IsZero() {
+		t.Fatal("la clé devrait porter une date d'expiration")
+	}
+	time.Sleep(10 * time.Millisecond)
+	if _, err := store.RegisterDevice(key.Key, "tard", genPubKey(t)); err == nil {
+		t.Fatal("une clé expirée devrait être refusée")
+	}
+	// Clé sans expiration : toujours valide.
+	forever, err := store.CreateAuthKey(true, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !forever.ExpiresAt.IsZero() {
+		t.Fatal("ttl 0 devrait signifier sans expiration")
+	}
+	if _, err := store.RegisterDevice(forever.Key, "ok", genPubKey(t)); err != nil {
+		t.Fatalf("clé sans expiration refusée: %v", err)
+	}
+}
+
+func TestAuthKeyTTLParam(t *testing.T) {
+	ts, store := newTestServer(t)
+	var keyResp types.AuthKeyResponse
+	resp := doJSON(t, "POST", ts.URL+"/api/v1/authkeys?ttl=30m", store.AdminKey(), nil, &keyResp)
+	if resp.StatusCode != http.StatusOK || keyResp.ExpiresAt.IsZero() {
+		t.Fatalf("ttl=30m: HTTP %d, expiration %v", resp.StatusCode, keyResp.ExpiresAt)
+	}
+	resp = doJSON(t, "POST", ts.URL+"/api/v1/authkeys?ttl=n-importe-quoi", store.AdminKey(), nil, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("ttl invalide: attendu 400, obtenu %d", resp.StatusCode)
+	}
+}
+
+func TestTokenRotation(t *testing.T) {
+	old := TokenRotateAfter
+	TokenRotateAfter = 0 // chaque poll déclenche une rotation
+	t.Cleanup(func() { TokenRotateAfter = old })
+
+	ts, store := newTestServer(t)
+	var keyResp types.AuthKeyResponse
+	doJSON(t, "POST", ts.URL+"/api/v1/authkeys", store.AdminKey(), nil, &keyResp)
+	var reg types.RegisterResponse
+	doJSON(t, "POST", ts.URL+"/api/v1/register", "", types.RegisterRequest{
+		AuthKey: keyResp.Key, Hostname: "alpha", PublicKey: genPubKey(t),
+	}, &reg)
+
+	var nm types.NetMap
+	doJSON(t, "POST", ts.URL+"/api/v1/poll", reg.DeviceToken, types.PollRequest{ListenPort: 1}, &nm)
+	if nm.NewToken == "" || nm.NewToken == reg.DeviceToken {
+		t.Fatalf("le poll devrait renvoyer un nouveau jeton: %q", nm.NewToken)
+	}
+
+	// L'ancien jeton reste toléré pendant la grâce (une génération)…
+	var nm2 types.NetMap
+	resp := doJSON(t, "POST", ts.URL+"/api/v1/poll", reg.DeviceToken, types.PollRequest{ListenPort: 1}, &nm2)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("l'ancien jeton devrait être toléré pendant la grâce: HTTP %d", resp.StatusCode)
+	}
+	// …et le jeton le plus récent fonctionne.
+	latest := nm2.NewToken
+	if latest == "" {
+		latest = nm.NewToken
+	}
+	resp = doJSON(t, "POST", ts.URL+"/api/v1/poll", latest, types.PollRequest{ListenPort: 1}, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("le dernier jeton devrait être accepté: HTTP %d", resp.StatusCode)
+	}
+	// Deux générations en arrière : refusé.
+	resp = doJSON(t, "POST", ts.URL+"/api/v1/poll", reg.DeviceToken, types.PollRequest{ListenPort: 1}, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("un jeton de deux générations devrait être refusé: HTTP %d", resp.StatusCode)
+	}
+
+	// Un jeton fantaisiste reste refusé.
+	resp = doJSON(t, "POST", ts.URL+"/api/v1/poll", "omtok-bidon", types.PollRequest{ListenPort: 1}, nil)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("jeton invalide: attendu 401, obtenu %d", resp.StatusCode)
+	}
+}
+
 func TestRevokeDevice(t *testing.T) {
 	ts, store := newTestServer(t)
 
@@ -204,7 +295,7 @@ func TestCustomCIDR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := store.CreateAuthKey(true)
+	key, err := store.CreateAuthKey(true, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +349,7 @@ func TestStorePersistence(t *testing.T) {
 		t.Fatal("la clé admin devrait être créée au premier démarrage")
 	}
 	admin := store.AdminKey()
-	key, err := store.CreateAuthKey(false)
+	key, err := store.CreateAuthKey(false, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

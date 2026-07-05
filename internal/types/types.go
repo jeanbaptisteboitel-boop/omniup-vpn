@@ -43,12 +43,17 @@ type Peer struct {
 type NetMap struct {
 	Self  Peer   `json:"self"`
 	Peers []Peer `json:"peers"`
+	// NewToken est renseigné quand le serveur renouvelle le jeton de la
+	// machine (rotation périodique) : l'agent doit le persister et
+	// l'utiliser dès l'appel suivant.
+	NewToken string `json:"new_token,omitempty"`
 }
 
 // AuthKeyResponse est renvoyée lors de la création d'une clé d'authentification.
 type AuthKeyResponse struct {
-	Key      string `json:"key"`
-	Reusable bool   `json:"reusable"`
+	Key       string    `json:"key"`
+	Reusable  bool      `json:"reusable"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
 }
 
 // ErrorResponse est le format d'erreur JSON de l'API.
