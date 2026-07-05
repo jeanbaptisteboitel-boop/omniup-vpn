@@ -2,7 +2,19 @@
 
 Ce guide part d'une instance Scaleway (n'importe quelle taille — même une
 Stardust à ~2 €/mois suffit largement : le serveur ne fait que coordonner)
-sous Debian/Ubuntu, et de deux machines Linux à relier.
+sous Debian/Ubuntu, du domaine **`vpn.omniup.fr`**, et de machines Linux à
+relier. Le plan de contrôle est servi en HTTPS via Caddy.
+
+## 0. DNS
+
+Chez votre registrar (ou dans Scaleway Domains si le domaine y est géré),
+créez un enregistrement **A** :
+
+```
+vpn.omniup.fr.   A   <IP publique de l'instance>
+```
+
+Vérifiez la propagation : `dig +short vpn.omniup.fr` doit renvoyer l'IP.
 
 ## 1. Ouvrir les ports (console Scaleway)
 
@@ -11,15 +23,15 @@ Dans la console Scaleway → **Instances** → votre instance → onglet
 
 | Protocole | Port | Usage |
 |---|---|---|
-| TCP | 8080 (ou 443 avec TLS) | API de coordination + console `/admin` |
+| TCP | 80 | Caddy — challenge Let's Encrypt |
+| TCP | 443 | API de coordination + console `/admin` (HTTPS) |
 | UDP | 3478 | STUN (découverte d'endpoint) |
 | UDP | 3479 | Relais de secours |
 
 > Si votre groupe de sécurité est en politique « accepter par défaut »
 > (le cas des groupes neufs), rien à faire — mais vérifiez.
-
-Notez l'**IP publique** de l'instance (ou associez-lui un nom DNS,
-recommandé : `vpn.mondomaine.fr → IP`).
+> Le port 8080/tcp n'a **pas** besoin d'être ouvert de l'extérieur :
+> omni-server n'écoute qu'en local, Caddy fait le TLS devant.
 
 ## 2. Installer le serveur de coordination
 
@@ -36,6 +48,11 @@ cd omniup-vpn
 docker compose up -d
 docker compose logs omni-server     # ← notez la clé admin « omadmin-… »
 ```
+
+Restreignez ensuite le port API à la machine (Caddy sera devant) : dans
+`docker-compose.yml`, remplacez `"8080:8080/tcp"` par
+`"127.0.0.1:8080:8080/tcp"` puis `docker compose up -d`. Les ports UDP
+3478/3479 restent exposés directement.
 
 ### Option B — binaire + systemd
 
@@ -55,15 +72,29 @@ systemctl enable --now omni-server
 journalctl -u omni-server | grep omadmin-   # ← la clé admin
 ```
 
-Vérification : `curl http://IP_DU_VPS:8080/healthz` doit répondre 200, et
-`http://IP_DU_VPS:8080/admin` doit afficher la console dans votre
+## 3. TLS avec Caddy
+
+```sh
+apt install -y caddy
+cat > /etc/caddy/Caddyfile <<'EOF'
+vpn.omniup.fr {
+    reverse_proxy 127.0.0.1:8080
+}
+EOF
+systemctl reload caddy
+```
+
+Caddy obtient et renouvelle le certificat Let's Encrypt tout seul.
+
+Vérification : `curl https://vpn.omniup.fr/healthz` doit répondre 200, et
+`https://vpn.omniup.fr/admin` doit afficher la console dans votre
 navigateur (connectez-vous avec la clé `omadmin-…`).
 
-## 3. Créer une clé d'enrôlement
+## 4. Créer une clé d'enrôlement
 
-Dans la console web (`/admin` → onglet **Clés d'enrôlement**) : cochez
-« réutilisable », choisissez l'expiration, **Créer une clé** — copiez le
-`omkey-…` affiché.
+Dans la console web (`https://vpn.omniup.fr/admin` → onglet **Clés
+d'enrôlement**) : cochez « réutilisable », choisissez l'expiration,
+**Créer une clé** — copiez le `omkey-…` affiché.
 
 Ou en CLI depuis le VPS :
 
@@ -72,21 +103,24 @@ export OMNIUP_ADMIN_KEY=omadmin-…
 omni-server genkey --reusable
 ```
 
-## 4. Connecter vos machines
+## 5. Connecter vos machines
 
 Sur **chaque machine Linux** à relier (portable, NAS, autre serveur…) :
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/jeanbaptisteboitel-boop/omniup-vpn/main/scripts/install-omnid.sh \
-  | sudo sh -s -- --server http://IP_DU_VPS:8080 --auth-key omkey-…
+  | sudo sh -s -- --server https://vpn.omniup.fr --auth-key omkey-…
 ```
+
+L'agent en déduit automatiquement le STUN (`vpn.omniup.fr:3478`) et le
+relais (`vpn.omniup.fr:3479`) — même hôte, en UDP direct.
 
 (Le script télécharge la dernière release, enrôle la machine et active le
 service systemd. Sans release publiée : compilez `make build` et lancez
 `sudo ./bin/omnid up --server … --auth-key …` puis installez
 `deploy/systemd/omnid.service`.)
 
-## 5. Vérifier
+## 6. Vérifier
 
 ```sh
 sudo omnid status
@@ -104,33 +138,11 @@ Dans `omnid status`, la colonne « via » dit tout :
 
 La console `/admin` montre les machines passer « en ligne » en ~10 s.
 
-## 6. (Recommandé) TLS avec un nom de domaine
-
-En HTTP clair, les clés d'enrôlement et jetons transitent en clair entre
-agents et VPS. Avec un domaine pointant sur l'instance, le plus simple est
-Caddy en frontal :
-
-```sh
-apt install -y caddy
-cat > /etc/caddy/Caddyfile <<'EOF'
-vpn.mondomaine.fr {
-    reverse_proxy 127.0.0.1:8080
-}
-EOF
-systemctl reload caddy
-```
-
-Caddy obtient et renouvelle le certificat tout seul (ouvrez 80 et
-443/tcp dans le groupe de sécurité ; 8080 peut alors être fermé de
-l'extérieur). Côté machines, enrôlez avec
-`--server https://vpn.mondomaine.fr` — STUN et relais restent en UDP
-directement sur 3478/3479.
-
 ## Dépannage
 
 | Symptôme | Piste |
 |---|---|
-| `poll: … connection refused` | Port 8080/tcp fermé (groupe de sécurité) ou serveur arrêté |
+| `poll: … connection refused` / erreur TLS | 80-443/tcp fermés, Caddy arrêté, ou DNS pas propagé (`dig vpn.omniup.fr`) |
 | `endpoints locaux` sans IP publique dans les logs omnid | UDP 3478 fermé → STUN muet ; le perçage se rabat sur l'endpoint observé par le serveur |
 | Pairs toujours `relay:…` | Perçage impossible (NAT symétrique) : normal, c'est le rôle du relais ; vérifiez quand même que l'UDP sortant n'est pas filtré côté machines |
 | `relais de secours indisponible` | UDP 3479 fermé sur le VPS |
