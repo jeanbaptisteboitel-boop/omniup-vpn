@@ -1,0 +1,6 @@
+bin/
+.git/
+*.md
+deploy/
+scripts/
+omni-server.json

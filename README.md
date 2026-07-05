@@ -38,11 +38,17 @@ que le magicsock de Tailscale, en miniature.
 
 ## Démarrage rapide
 
-### 1. Compiler
+### 1. Compiler (ou télécharger)
 
 ```sh
 make build     # produit bin/omni-server et bin/omnid
+make dist      # binaires statiques linux amd64 + arm64 dans dist/
 ```
+
+Des binaires précompilés sont attachés à chaque
+[release GitHub](https://github.com/jeanbaptisteboitel-boop/omniup-vpn/releases),
+et l'image Docker du serveur est publiée sur
+`ghcr.io/jeanbaptisteboitel-boop/omniup-vpn`.
 
 ### 2. Lancer le serveur de coordination
 
@@ -50,6 +56,13 @@ Sur une machine joignable par toutes les autres (IP publique ou VPS) :
 
 ```sh
 ./bin/omni-server serve --addr :8080 --state /var/lib/omniup/server.json
+```
+
+Ou en Docker :
+
+```sh
+docker compose up -d
+docker compose logs omni-server   # la clé admin s'affiche au premier démarrage
 ```
 
 Au premier démarrage, le serveur affiche sa **clé admin** (`omadmin-…`) —
@@ -81,6 +94,14 @@ noyau n'est requis) :
 
 ```sh
 sudo ./bin/omnid up --server http://SERVEUR:8080 --auth-key omkey-…
+```
+
+Ou en une commande (télécharge la release, enrôle et installe le service
+systemd) :
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jeanbaptisteboitel-boop/omniup-vpn/main/scripts/install-omnid.sh \
+  | sudo sh -s -- --server http://SERVEUR:8080 --auth-key omkey-…
 ```
 
 L'agent génère ses clés WireGuard, reçoit une adresse (ex. `100.64.0.1`),
@@ -232,6 +253,22 @@ Les prochaines étapes, par ordre de priorité :
 - [ ] Support macOS/Windows (le moteur userspace rend le portage possible ;
       il reste l'adressage et les routes par plateforme)
 - [ ] SSO/OIDC pour l'enrôlement à la place des clés pré-partagées
+
+## Déploiement
+
+- **systemd** : unités prêtes à l'emploi dans `deploy/systemd/`
+  (`omni-server.service` tourne sous un utilisateur dynamique non
+  privilégié avec durcissement ; `omnid.service` nécessite root pour le
+  TUN). Options supplémentaires via `/etc/default/omni-server` et
+  `/etc/default/omnid` (variable `OPTIONS`).
+- **Docker** : `Dockerfile` multi-étages (image distroless, ~10 Mo) et
+  `docker-compose.yml` pour le serveur — API 8080/tcp, STUN 3478/udp,
+  relais 3479/udp, état dans un volume. L'agent, lui, s'installe
+  directement sur les machines (il crée l'interface réseau de l'hôte).
+- **Releases** : le workflow `release.yml` publie, à chaque tag `v*`, les
+  binaires statiques linux amd64/arm64 (+ SHA256SUMS) et l'image
+  multi-arch sur ghcr. Créer une release : `git tag v0.1.0 && git push --tags`.
+- `omnid version` / `omni-server version` affichent la version embarquée.
 
 ## Développement
 

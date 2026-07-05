@@ -21,6 +21,9 @@ import (
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/wgnet"
 )
 
+// version est injectée au build (-ldflags "-X main.version=v1.2.3").
+var version = "dev"
+
 const usage = `omnid — agent OmniUp VPN
 
 Usage :
@@ -51,6 +54,8 @@ func main() {
 		err = cmdStatus(os.Args[2:])
 	case "down":
 		err = cmdDown(os.Args[2:])
+	case "version":
+		fmt.Println(version)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
