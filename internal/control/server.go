@@ -96,7 +96,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, self Device)
 			endpoint = net.JoinHostPort(host, strconv.Itoa(req.ListenPort))
 		}
 	}
-	if err := s.store.TouchDevice(self.PublicKey, endpoint); err != nil {
+	if err := s.store.TouchDevice(self.PublicKey, endpoint, req.Endpoints); err != nil {
 		log.Printf("poll: %v", err)
 		writeError(w, http.StatusInternalServerError, "erreur interne")
 		return
@@ -174,6 +174,7 @@ func peerView(d Device, now time.Time) types.Peer {
 		PublicKey: d.PublicKey,
 		IP:        d.IP,
 		Endpoint:  d.Endpoint,
+		Endpoints: append([]string(nil), d.Endpoints...),
 		LastSeen:  d.LastSeen,
 		Online:    !d.LastSeen.IsZero() && now.Sub(d.LastSeen) < OnlineThreshold,
 	}

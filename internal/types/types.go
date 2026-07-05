@@ -21,9 +21,11 @@ type RegisterResponse struct {
 }
 
 // PollRequest est envoyée périodiquement par l'agent : elle signale le port
-// d'écoute WireGuard et récupère la carte du réseau en retour.
+// d'écoute WireGuard et les endpoints candidats découverts (STUN, adresses
+// locales), et récupère la carte du réseau en retour.
 type PollRequest struct {
-	ListenPort int `json:"listen_port"`
+	ListenPort int      `json:"listen_port"`
+	Endpoints  []string `json:"endpoints,omitempty"`
 }
 
 // Peer décrit une machine du réseau telle que vue par le serveur.
@@ -31,7 +33,8 @@ type Peer struct {
 	Hostname  string    `json:"hostname"`
 	PublicKey string    `json:"public_key"`
 	IP        string    `json:"ip"`
-	Endpoint  string    `json:"endpoint,omitempty"` // "ip_publique:port" si connu
+	Endpoint  string    `json:"endpoint,omitempty"`  // observé par le serveur
+	Endpoints []string  `json:"endpoints,omitempty"` // candidats rapportés par l'agent
 	LastSeen  time.Time `json:"last_seen"`
 	Online    bool      `json:"online"`
 }

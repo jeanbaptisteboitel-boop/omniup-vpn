@@ -6,6 +6,13 @@ adresse stable sur un réseau overlay privé (`100.64.0.0/24`) et communique
 serveur de coordination léger gère l'enrôlement et distribue la carte des
 pairs — il ne voit jamais passer le trafic.
 
+L'agent fait tourner WireGuard **en espace utilisateur** (wireguard-go sur
+TUN — aucun module noyau requis) au-dessus d'une « socket magique » qui
+partage l'unique socket UDP entre trois protocoles : les paquets WireGuard,
+le **STUN** (découverte de l'endpoint public du port réellement utilisé par
+les tunnels) et les sondes « **disco** » de perçage NAT — le même principe
+que le magicsock de Tailscale, en miniature.
+
 ```
                     ┌──────────────────┐
                     │   omni-server    │   plan de contrôle (HTTP)
@@ -59,18 +66,24 @@ export OMNIUP_ADMIN_KEY=omadmin-…
 (`--reusable` permet d'enrôler plusieurs machines avec la même clé ;
 sans ce drapeau la clé est à usage unique.)
 
+Ouvrez aussi le port UDP 3478 (STUN) vers le serveur — modifiable avec
+`--stun-addr`, désactivable avec `--stun-addr off`.
+
 ### 4. Connecter chaque machine
 
-Sur chaque machine Linux (en root, module noyau `wireguard` requis) :
+Sur chaque machine Linux (en root ; `/dev/net/tun` suffit, aucun module
+noyau n'est requis) :
 
 ```sh
 sudo ./bin/omnid up --server http://SERVEUR:8080 --auth-key omkey-…
 ```
 
 L'agent génère ses clés WireGuard, reçoit une adresse (ex. `100.64.0.1`),
-monte l'interface `omni0` et synchronise les pairs toutes les 10 s.
-L'identité est persistée dans `/var/lib/omniup/omnid.json` : aux démarrages
-suivants, `sudo omnid up` suffit (plus besoin de clé).
+monte l'interface `omni0` (userspace) et synchronise les pairs toutes les
+10 s. L'identité est persistée dans `/var/lib/omniup/omnid.json` : aux
+démarrages suivants, `sudo omnid up` suffit (plus besoin de clé).
+L'interface vit avec le démon : elle disparaît à son arrêt, et
+`sudo omnid down` arrête le démon en cours.
 
 ### 5. Vérifier
 
@@ -87,15 +100,26 @@ ping 100.64.0.2                          # trafic chiffré direct via WireGuard
 1. **Enrôlement** — l'agent génère une paire de clés WireGuard et envoie sa
    clé publique au serveur avec une clé d'enrôlement (`POST /api/v1/register`).
    Le serveur attribue une IP du réseau overlay et renvoie un jeton machine.
-2. **Heartbeat** — toutes les 10 s, l'agent appelle `POST /api/v1/poll` en
-   déclarant son port UDP WireGuard. Le serveur en déduit l'endpoint public
-   de la machine (IP source de la requête + port déclaré) et renvoie la
-   carte complète du réseau.
-3. **Synchronisation** — l'agent applique la carte à l'interface WireGuard :
-   un pair par machine, `AllowedIPs = <ip>/32`, endpoint public si connu,
-   keepalive 25 s pour maintenir les mappings NAT. Le trafic circule ensuite
-   **directement** entre machines, chiffré de bout en bout — le serveur de
-   coordination n'y a jamais accès (il ne connaît que les clés publiques).
+2. **Découverte d'endpoints** — l'agent interroge le serveur STUN *depuis
+   sa socket WireGuard* (le mapping NAT dépend du port source : il faut
+   sonder le bon) et collecte ses adresses locales. Cette liste ordonnée de
+   candidats — public STUN d'abord, puis LAN — est déclarée au serveur.
+3. **Heartbeat** — toutes les 10 s, l'agent appelle `POST /api/v1/poll` avec
+   ses candidats. Le serveur y ajoute l'endpoint qu'il observe lui-même et
+   renvoie la carte complète du réseau (filtrée par les ACLs).
+4. **Perçage NAT** — pour chaque pair sans handshake récent, l'agent envoie
+   des sondes « disco » ping/pong vers **tous** les candidats du pair depuis
+   la socket WireGuard. L'envoi ouvre le mapping NAT sortant ; les deux
+   pairs le faisant simultanément, les chemins se percent. Le premier pong
+   reçu désigne le chemin fonctionnel, appliqué comme endpoint du pair
+   (les machines d'un même LAN se trouvent ainsi en direct, sans détour).
+5. **Trafic** — `AllowedIPs = <ip>/32` par pair, keepalive 25 s. Le trafic
+   circule **directement** entre machines, chiffré de bout en bout — le
+   serveur de coordination n'y a jamais accès (il ne connaît que les clés
+   publiques) ; les sondes disco ne transportent aucune donnée.
+
+L'interface expose la socket UAPI standard (`/var/run/wireguard/omni0.sock`) :
+`wg show omni0` et `omnid status` fonctionnent tous les deux.
 
 ## API du serveur
 
@@ -176,15 +200,16 @@ Les prochaines étapes, par ordre de priorité :
       reverse proxy)
 - [x] **ACLs** : politique d'accès entre machines (qui parle à qui)
 - [x] **DNS interne** (équivalent MagicDNS) : `alpha.omni` → `100.64.0.1`
-- [ ] **Traversée NAT** : découverte d'endpoint par STUN, perçage UDP
-      coordonné (le mécanisme actuel — IP source HTTP + port déclaré — ne
-      fonctionne pas derrière un NAT symétrique) ; nécessite de passer à
-      WireGuard userspace pour contrôler la socket UDP
+- [x] **WireGuard userspace** avec socket magique (aucun module noyau requis)
+- [x] **Traversée NAT** : découverte d'endpoint par STUN sur la socket
+      WireGuard, candidats multiples (public + LAN), perçage UDP par sondes
+      disco (reste hors de portée : le NAT symétrique des deux côtés)
 - [ ] **Relais** type DERP pour les paires de machines qui ne peuvent pas
-      établir de connexion directe
+      établir de connexion directe (NAT symétrique des deux côtés)
 - [ ] Élargir l'IPAM à `100.64.0.0/10`, expiration des clés, révocation de
       machines, rotation des jetons
-- [ ] Support macOS/Windows via wireguard-go (userspace)
+- [ ] Support macOS/Windows (le moteur userspace rend le portage possible ;
+      il reste l'adressage et les routes par plateforme)
 - [ ] SSO/OIDC pour l'enrôlement à la place des clés pré-partagées
 
 ## Développement
@@ -201,7 +226,14 @@ cmd/omni-server/    binaire serveur de coordination
 cmd/omnid/          binaire agent (up / status / down)
 internal/types/     structures de l'API agent ↔ serveur
 internal/control/   serveur : store persistant, IPAM, handlers HTTP
-internal/agent/     agent : client API, identité persistée, boucle de synchro
+internal/agent/     agent : client API, identité, candidats, perçage NAT
 internal/dnssrv/    DNS interne (<machine>.omni)
-internal/wgnet/     interface WireGuard (netlink + wgctrl)
+internal/omnisock/  socket magique : conn.Bind partagé WireGuard/STUN/disco
+internal/stun/      STUN minimal (RFC 5389, Binding + XOR-MAPPED-ADDRESS)
+internal/wgnet/     moteur WireGuard userspace (TUN, UAPI, netlink)
 ```
+
+Le test `internal/wgnet/e2e_test.go` fait dialoguer deux moteurs WireGuard
+complets à travers deux sockets magiques (piles réseau userspace netstack) :
+le chiffrement, le transport et le roaming sont exercés pour de vrai, sans
+privilèges ni module noyau.

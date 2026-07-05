@@ -1,6 +1,7 @@
 // omnid est l'agent OmniUp VPN : il enregistre la machine auprès du serveur
-// de coordination, monte l'interface WireGuard et maintient la liste des
-// pairs à jour. Nécessite root (configuration réseau) sous Linux.
+// de coordination, fait tourner WireGuard en espace utilisateur (aucun
+// module noyau requis) et maintient la liste des pairs à jour, avec
+// découverte STUN et perçage NAT. Nécessite root (TUN + adressage) sous Linux.
 package main
 
 import (
@@ -10,10 +11,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/agent"
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/types"
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/wgnet"
 )
 
@@ -21,7 +25,7 @@ const usage = `omnid — agent OmniUp VPN
 
 Usage :
   omnid up     --server URL --auth-key CLÉ [--hostname NOM] [--iface omni0] [--port 41641]
-               [--dns=true] [--dns-zone omni]
+               [--mtu 1280] [--stun hôte:3478,...] [--dns=true] [--dns-zone omni]
   omnid status
   omnid down
 
@@ -29,7 +33,8 @@ Options communes :
   --state CHEMIN   fichier d'identité de la machine (défaut : /var/lib/omniup/omnid.json)
 
 « up » tourne au premier plan : lancez-le sous systemd ou avec & pour le
-laisser en tâche de fond.
+laisser en tâche de fond. L'interface disparaît à l'arrêt du démon ;
+« omnid down » arrête le démon en cours.
 `
 
 func main() {
@@ -64,25 +69,38 @@ func cmdUp(args []string) error {
 	server := fs.String("server", "", "URL du serveur de coordination (ex: https://vpn.example.com)")
 	authKey := fs.String("auth-key", "", "clé d'enrôlement (requise à la première connexion)")
 	hostname := fs.String("hostname", defaultHostname(), "nom de la machine sur le réseau")
-	iface := fs.String("iface", "omni0", "nom de l'interface WireGuard")
+	iface := fs.String("iface", "omni0", "nom de l'interface")
 	port := fs.Int("port", 41641, "port d'écoute UDP WireGuard")
+	mtu := fs.Int("mtu", wgnet.DefaultMTU, "MTU de l'interface")
+	stunList := fs.String("stun", "", "serveurs STUN hôte:port séparés par des virgules (défaut : serveur de coordination, port 3478)")
 	statePath := fs.String("state", defaultStatePath(), "fichier d'identité de la machine")
 	dnsOn := fs.Bool("dns", true, "activer le DNS interne sur l'adresse overlay")
 	dnsZone := fs.String("dns-zone", "omni", "zone du DNS interne (<machine>.<zone>)")
 	fs.Parse(args)
 
+	var stunServers []string
+	if *stunList != "" {
+		for _, s := range strings.Split(*stunList, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				stunServers = append(stunServers, s)
+			}
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	return agent.Up(ctx, agent.Options{
-		ServerURL:  *server,
-		AuthKey:    *authKey,
-		Hostname:   *hostname,
-		Iface:      *iface,
-		ListenPort: *port,
-		StatePath:  *statePath,
-		DNS:        *dnsOn,
-		DNSZone:    *dnsZone,
+		ServerURL:   *server,
+		AuthKey:     *authKey,
+		Hostname:    *hostname,
+		Iface:       *iface,
+		ListenPort:  *port,
+		MTU:         *mtu,
+		StatePath:   *statePath,
+		STUNServers: stunServers,
+		DNS:         *dnsOn,
+		DNSZone:     *dnsZone,
 	})
 }
 
@@ -102,7 +120,7 @@ func cmdStatus(args []string) error {
 	fmt.Printf("machine    : %s (%s)\n", st.IP, st.Iface)
 	fmt.Printf("serveur    : %s\n", st.ServerURL)
 
-	dev, err := wgnet.DeviceInfo(st.Iface)
+	dev, err := wgnet.QueryStatus(st.Iface)
 	if err != nil {
 		fmt.Printf("interface  : inactive (%v)\n", err)
 		return nil
@@ -112,7 +130,8 @@ func cmdStatus(args []string) error {
 	// Corrélation clé publique → nom via la carte du réseau.
 	names := map[string]string{}
 	ips := map[string]string{}
-	if nm, err := agent.NewClient(st.ServerURL, st.DeviceToken).Poll(st.ListenPort); err == nil {
+	if nm, err := agent.NewClient(st.ServerURL, st.DeviceToken).Poll(
+		types.PollRequest{ListenPort: st.ListenPort}); err == nil {
 		for _, p := range nm.Peers {
 			names[p.PublicKey] = p.Hostname
 			ips[p.PublicKey] = p.IP
@@ -120,17 +139,20 @@ func cmdStatus(args []string) error {
 	}
 
 	for _, p := range dev.Peers {
-		pub := p.PublicKey.String()
-		name := names[pub]
-		if name == "" {
-			name = pub[:12] + "…"
+		name := names[p.PublicKey]
+		if name == "" && len(p.PublicKey) > 12 {
+			name = p.PublicKey[:12] + "…"
 		}
 		hs := "jamais de handshake"
-		if !p.LastHandshakeTime.IsZero() {
-			hs = fmt.Sprintf("handshake il y a %s", time.Since(p.LastHandshakeTime).Round(time.Second))
+		if !p.LastHandshake.IsZero() {
+			hs = fmt.Sprintf("handshake il y a %s", time.Since(p.LastHandshake).Round(time.Second))
 		}
-		fmt.Printf("  pair %s (%s) — %s, rx %d o / tx %d o\n",
-			name, ips[pub], hs, p.ReceiveBytes, p.TransmitBytes)
+		ep := p.Endpoint
+		if ep == "" {
+			ep = "endpoint inconnu"
+		}
+		fmt.Printf("  pair %s (%s) — %s, via %s, rx %d o / tx %d o\n",
+			name, ips[p.PublicKey], hs, ep, p.RxBytes, p.TxBytes)
 	}
 	return nil
 }
@@ -138,25 +160,21 @@ func cmdStatus(args []string) error {
 func cmdDown(args []string) error {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
 	statePath := fs.String("state", defaultStatePath(), "fichier d'identité de la machine")
-	iface := fs.String("iface", "", "nom de l'interface (défaut : celui de l'identité)")
 	fs.Parse(args)
 
-	name := *iface
-	if name == "" {
-		st, err := agent.LoadState(*statePath)
-		if err != nil {
-			return err
-		}
-		if st == nil {
-			name = "omni0"
-		} else {
-			name = st.Iface
-		}
+	pidPath := agent.PidFilePath(*statePath)
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return fmt.Errorf("aucun démon omnid en cours (pas de %s)", pidPath)
 	}
-	if err := wgnet.DeleteInterface(name); err != nil {
-		return err
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return fmt.Errorf("fichier pid corrompu: %w", err)
 	}
-	fmt.Printf("interface %s supprimée\n", name)
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		return fmt.Errorf("arrêt du démon (pid %d): %w", pid, err)
+	}
+	fmt.Printf("démon omnid arrêté (pid %d) — l'interface disparaît avec lui\n", pid)
 	return nil
 }
 

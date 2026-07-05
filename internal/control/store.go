@@ -33,7 +33,8 @@ type Device struct {
 	PublicKey string    `json:"public_key"`
 	Token     string    `json:"token"`
 	IP        string    `json:"ip"`
-	Endpoint  string    `json:"endpoint,omitempty"`
+	Endpoint  string    `json:"endpoint,omitempty"`  // observé par le serveur
+	Endpoints []string  `json:"endpoints,omitempty"` // candidats rapportés par l'agent
 	CreatedAt time.Time `json:"created_at"`
 	LastSeen  time.Time `json:"last_seen"`
 }
@@ -178,8 +179,9 @@ func (st *Store) DeviceByToken(token string) (*Device, bool) {
 	return nil, false
 }
 
-// TouchDevice met à jour la date de dernière activité et l'endpoint observé.
-func (st *Store) TouchDevice(publicKey, endpoint string) error {
+// TouchDevice met à jour la date de dernière activité, l'endpoint observé
+// par le serveur et les candidats rapportés par l'agent.
+func (st *Store) TouchDevice(publicKey, endpoint string, reported []string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	d, ok := st.s.Devices[publicKey]
@@ -189,6 +191,9 @@ func (st *Store) TouchDevice(publicKey, endpoint string) error {
 	d.LastSeen = time.Now().UTC()
 	if endpoint != "" {
 		d.Endpoint = endpoint
+	}
+	if reported != nil {
+		d.Endpoints = append([]string(nil), reported...)
 	}
 	return st.saveLocked()
 }

@@ -40,10 +40,10 @@ func (c *Client) Register(authKey, hostname, publicKey string) (*types.RegisterR
 	return &resp, nil
 }
 
-// Poll signale le port d'écoute et récupère la carte du réseau.
-func (c *Client) Poll(listenPort int) (*types.NetMap, error) {
+// Poll signale nos endpoints candidats et récupère la carte du réseau.
+func (c *Client) Poll(req types.PollRequest) (*types.NetMap, error) {
 	var nm types.NetMap
-	if err := c.do("POST", "/api/v1/poll", types.PollRequest{ListenPort: listenPort}, &nm); err != nil {
+	if err := c.do("POST", "/api/v1/poll", req, &nm); err != nil {
 		return nil, err
 	}
 	return &nm, nil

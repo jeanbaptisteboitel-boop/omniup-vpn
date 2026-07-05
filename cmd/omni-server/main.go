@@ -6,17 +6,20 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"text/tabwriter"
 	"time"
 
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/control"
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/stun"
 	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/types"
 )
 
@@ -63,6 +66,7 @@ func cmdServe(args []string) error {
 	statePath := fs.String("state", "./omni-server.json", "fichier d'état du serveur")
 	tlsCert := fs.String("tls-cert", "", "certificat TLS (PEM) — active HTTPS")
 	tlsKey := fs.String("tls-key", "", "clé privée TLS (PEM)")
+	stunAddr := fs.String("stun-addr", ":3478", "adresse d'écoute STUN (UDP) ; \"off\" pour désactiver")
 	fs.Parse(args)
 
 	if (*tlsCert == "") != (*tlsKey == "") {
@@ -76,6 +80,21 @@ func cmdServe(args []string) error {
 	if adminCreated {
 		log.Printf("première initialisation — clé admin : %s", store.AdminKey())
 		log.Printf("conservez-la : elle permet de créer des clés d'enrôlement (genkey)")
+	}
+
+	// Service STUN : permet aux agents de découvrir leur endpoint public
+	// depuis leur socket WireGuard (découverte du mapping NAT).
+	if *stunAddr != "off" {
+		pc, err := net.ListenPacket("udp", *stunAddr)
+		if err != nil {
+			return fmt.Errorf("écoute STUN sur %s: %w", *stunAddr, err)
+		}
+		go func() {
+			if err := stun.Serve(context.Background(), pc); err != nil {
+				log.Printf("stun: %v", err)
+			}
+		}()
+		log.Printf("service STUN à l'écoute sur %s (UDP)", *stunAddr)
 	}
 
 	srv := &http.Server{
