@@ -34,6 +34,8 @@ type Device struct {
 	tun  tun.Device
 	dev  *device.Device
 	uapi net.Listener
+
+	installedRoutes map[string]bool // routes système posées par SetRoutes
 }
 
 // Start crée l'interface TUN, démarre le moteur WireGuard avec la clé
@@ -68,7 +70,7 @@ func StartWithTUN(tunDev tun.Device, name string, privateKey wgtypes.Key, listen
 		return nil, fmt.Errorf("activation du moteur: %w", err)
 	}
 
-	d := &Device{Name: name, Bind: bind, tun: tunDev, dev: dev}
+	d := &Device{Name: name, Bind: bind, tun: tunDev, dev: dev, installedRoutes: map[string]bool{}}
 
 	// Socket UAPI : facultative (permet « wg show » et « omnid status »).
 	// Socket unix sous Linux/macOS, pipe nommé sous Windows.
@@ -129,6 +131,12 @@ func (d *Device) SyncPeers(peers []types.Peer, known map[string]bool, initialEnd
 		}
 		sb.WriteString("replace_allowed_ips=true\n")
 		fmt.Fprintf(&sb, "allowed_ip=%s/32\n", p.IP)
+		// Sous-réseaux routés par ce pair (subnet routing / exit node).
+		for _, route := range p.Routes {
+			if _, _, err := net.ParseCIDR(route); err == nil {
+				fmt.Fprintf(&sb, "allowed_ip=%s\n", route)
+			}
+		}
 		fmt.Fprintf(&sb, "persistent_keepalive_interval=%d\n", int(KeepaliveInterval.Seconds()))
 	}
 	for pub := range known {
@@ -153,6 +161,43 @@ func (d *Device) SyncPeers(peers []types.Peer, known map[string]bool, initialEnd
 		known[pub] = true
 	}
 	return nil
+}
+
+// SetRoutes aligne les routes système des sous-réseaux des pairs sur la
+// carte du réseau : ajoute les nouvelles, retire celles qui ont disparu.
+// (0.0.0.0/0 n'est jamais installé ici — l'exit node a son propre
+// mécanisme de policy routing.)
+func (d *Device) SetRoutes(cidrs []string) error {
+	desired := map[string]bool{}
+	for _, c := range cidrs {
+		if _, ipnet, err := net.ParseCIDR(c); err == nil {
+			if ones, _ := ipnet.Mask.Size(); ones > 0 {
+				desired[ipnet.String()] = true
+			}
+		}
+	}
+	var firstErr error
+	for c := range d.installedRoutes {
+		if !desired[c] {
+			if err := d.routeDel(c); err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("retrait de la route %s: %w", c, err)
+			}
+			delete(d.installedRoutes, c)
+		}
+	}
+	for c := range desired {
+		if d.installedRoutes[c] {
+			continue
+		}
+		if err := d.routeAdd(c); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("ajout de la route %s: %w", c, err)
+			}
+			continue
+		}
+		d.installedRoutes[c] = true
+	}
+	return firstErr
 }
 
 // SetPeerEndpoint force l'endpoint d'un pair (résultat du perçage NAT).

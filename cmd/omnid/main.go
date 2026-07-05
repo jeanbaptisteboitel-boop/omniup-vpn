@@ -31,6 +31,8 @@ const usage = `omnid — agent OmniUp VPN
 Usage :
   omnid up     --server URL [--auth-key CLÉ] [--hostname NOM] [--iface omni0] [--port 41641]
                [--mtu 1280] [--stun hôte:3478,...] [--relay hôte:3479] [--dns=true] [--dns-zone omni]
+               [--advertise-routes CIDR,...] [--advertise-exit-node] [--exit-node PAIR]
+               [--accept-routes=true]
   omnid status
   omnid down
   omnid service install --server URL --auth-key CLÉ   (Windows : service au démarrage)
@@ -112,7 +114,20 @@ func parseUpOptions(name string, args []string) agent.Options {
 	statePath := fs.String("state", defaultStatePath(), "fichier d'identité de la machine")
 	dnsOn := fs.Bool("dns", true, "activer le DNS interne sur l'adresse overlay")
 	dnsZone := fs.String("dns-zone", "omni", "zone du DNS interne (<machine>.<zone>)")
+	advRoutes := fs.String("advertise-routes", "", "sous-réseaux à router pour le réseau, ex: 192.168.1.0/24,10.0.0.0/24 (Linux, approbation admin requise)")
+	advExit := fs.Bool("advertise-exit-node", false, "proposer de router tout Internet pour les pairs (Linux, approbation admin requise)")
+	exitNode := fs.String("exit-node", "", "router tout notre trafic Internet via ce pair (IP ou nom, Linux)")
+	acceptRoutes := fs.Bool("accept-routes", true, "installer les routes de sous-réseaux annoncées par les pairs")
 	fs.Parse(args)
+
+	var routes []string
+	if *advRoutes != "" {
+		for _, r := range strings.Split(*advRoutes, ",") {
+			if r = strings.TrimSpace(r); r != "" {
+				routes = append(routes, r)
+			}
+		}
+	}
 
 	var stunServers []string
 	if *stunList != "" {
@@ -134,6 +149,11 @@ func parseUpOptions(name string, args []string) agent.Options {
 		RelayServer: *relaySrv,
 		DNS:         *dnsOn,
 		DNSZone:     *dnsZone,
+
+		AdvertiseRoutes:   routes,
+		AdvertiseExitNode: *advExit,
+		ExitNode:          *exitNode,
+		AcceptRoutes:      *acceptRoutes,
 	}
 }
 

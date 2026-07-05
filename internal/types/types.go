@@ -26,6 +26,10 @@ type RegisterResponse struct {
 type PollRequest struct {
 	ListenPort int      `json:"listen_port"`
 	Endpoints  []string `json:"endpoints,omitempty"`
+	// AdvertisedRoutes : sous-réseaux que cette machine propose de
+	// router (0.0.0.0/0 = exit node). Distribués aux pairs seulement
+	// après approbation par l'administrateur.
+	AdvertisedRoutes []string `json:"advertised_routes,omitempty"`
 }
 
 // Peer décrit une machine du réseau telle que vue par le serveur.
@@ -36,8 +40,13 @@ type Peer struct {
 	Owner     string    `json:"owner,omitempty"`     // e-mail SSO, vide si enrôlée par clé
 	Endpoint  string    `json:"endpoint,omitempty"`  // observé par le serveur
 	Endpoints []string  `json:"endpoints,omitempty"` // candidats rapportés par l'agent
-	LastSeen  time.Time `json:"last_seen"`
-	Online    bool      `json:"online"`
+	// Routes : sous-réseaux routés par ce pair (annoncés ET approuvés).
+	Routes []string `json:"routes,omitempty"`
+	// AdvertisedRoutes : annoncés, en attente ou non d'approbation
+	// (renseigné dans les vues admin uniquement).
+	AdvertisedRoutes []string  `json:"advertised_routes,omitempty"`
+	LastSeen         time.Time `json:"last_seen"`
+	Online           bool      `json:"online"`
 }
 
 // EnrollStartRequest ouvre une session d'enrôlement SSO : l'agent fournit

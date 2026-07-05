@@ -45,6 +45,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/authkeys", s.requireAdmin(s.handleListAuthKeys))
 	mux.HandleFunc("GET /api/v1/devices", s.requireAdmin(s.handleListDevices))
 	mux.HandleFunc("DELETE /api/v1/devices/{target}", s.requireAdmin(s.handleRevokeDevice))
+	mux.HandleFunc("PUT /api/v1/devices/{target}/routes", s.requireAdmin(s.handleSetRoutes))
 	mux.HandleFunc("GET /api/v1/acl", s.requireAdmin(s.handleGetACL))
 	mux.HandleFunc("PUT /api/v1/acl", s.requireAdmin(s.handleSetACL))
 	mux.HandleFunc("GET /api/v1/info", s.requireAdmin(s.handleInfo))
@@ -110,7 +111,7 @@ func (s *Server) handlePoll(w http.ResponseWriter, r *http.Request, self Device)
 			endpoint = net.JoinHostPort(host, strconv.Itoa(req.ListenPort))
 		}
 	}
-	if err := s.store.TouchDevice(self.PublicKey, endpoint, req.Endpoints); err != nil {
+	if err := s.store.TouchDevice(self.PublicKey, endpoint, req.Endpoints, req.AdvertisedRoutes); err != nil {
 		log.Printf("poll: %v", err)
 		writeError(w, http.StatusInternalServerError, "erreur interne")
 		return
@@ -171,9 +172,28 @@ func (s *Server) handleListDevices(w http.ResponseWriter, _ *http.Request) {
 	now := time.Now()
 	peers := []types.Peer{}
 	for _, d := range s.store.Devices() {
-		peers = append(peers, peerView(d, now))
+		peers = append(peers, adminPeerView(d, now))
 	}
 	writeJSON(w, http.StatusOK, peers)
+}
+
+// handleSetRoutes approuve les routes d'une machine (liste complète,
+// vide pour tout retirer).
+func (s *Server) handleSetRoutes(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Routes []string `json:"routes"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "corps JSON invalide")
+		return
+	}
+	d, err := s.store.SetApprovedRoutes(r.PathValue("target"), req.Routes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	log.Printf("routes approuvées pour %s (%s): %v", d.Hostname, d.IP, d.ApprovedRoutes)
+	writeJSON(w, http.StatusOK, adminPeerView(*d, time.Now()))
 }
 
 func (s *Server) handleListAuthKeys(w http.ResponseWriter, _ *http.Request) {
@@ -256,9 +276,17 @@ func peerView(d Device, now time.Time) types.Peer {
 		Owner:     d.Owner,
 		Endpoint:  d.Endpoint,
 		Endpoints: append([]string(nil), d.Endpoints...),
+		Routes:    activeRoutes(d),
 		LastSeen:  d.LastSeen,
 		Online:    !d.LastSeen.IsZero() && now.Sub(d.LastSeen) < OnlineThreshold,
 	}
+}
+
+// adminPeerView complète peerView avec les routes annoncées (vue admin).
+func adminPeerView(d Device, now time.Time) types.Peer {
+	p := peerView(d, now)
+	p.AdvertisedRoutes = append([]string(nil), d.AdvertisedRoutes...)
+	return p
 }
 
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {

@@ -38,6 +38,7 @@ type Bind struct {
 	stunTx map[stun.TxID]chan netip.AddrPort
 	onPong PongHandler
 	closed bool
+	mark   uint32 // SO_MARK (anti-boucle exit node, Linux)
 
 	// Relais de secours : les endpoints "relay:<clé>" passent par lui.
 	// L'enregistrement est authentifié par défi-réponse ECDH, d'où la
@@ -73,6 +74,9 @@ func (b *Bind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	udp, err := net.ListenUDP("udp", &net.UDPAddr{Port: int(port)})
 	if err != nil {
 		return nil, 0, err
+	}
+	if b.mark != 0 {
+		_ = setSocketMark(udp, b.mark)
 	}
 	b.udp = udp
 	b.closed = false
@@ -288,8 +292,17 @@ func (b *Bind) Close() error {
 	return err
 }
 
-// SetMark implémente conn.Bind (non utilisé sous Linux sans fwmark).
-func (b *Bind) SetMark(uint32) error { return nil }
+// SetMark implémente conn.Bind : appelé par le moteur quand un fwmark est
+// configuré (mode exit node). Appliqué immédiatement et aux réouvertures.
+func (b *Bind) SetMark(mark uint32) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.mark = mark
+	if b.udp != nil && mark != 0 {
+		return setSocketMark(b.udp, mark)
+	}
+	return nil
+}
 
 // BatchSize implémente conn.Bind : un paquet par lecture.
 func (b *Bind) BatchSize() int { return 1 }

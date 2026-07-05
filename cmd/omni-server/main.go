@@ -38,6 +38,7 @@ Usage :
   omni-server invite  [--server URL] [--admin-key CLÉ] [--expiry 168h]
   omni-server devices [--server URL] [--admin-key CLÉ]
   omni-server revoke  [--server URL] [--admin-key CLÉ] MACHINE (ip, nom ou id)
+  omni-server routes  [--server URL] [--admin-key CLÉ] [MACHINE CIDR,... | MACHINE none]
   omni-server acl     [--server URL] [--admin-key CLÉ] [--set politique.json]
 
 La clé admin est affichée au premier démarrage du serveur ; elle peut aussi
@@ -62,6 +63,8 @@ func main() {
 		err = cmdRevoke(os.Args[2:])
 	case "invite":
 		err = cmdInvite(os.Args[2:])
+	case "routes":
+		err = cmdRoutes(os.Args[2:])
 	case "acl":
 		err = cmdACL(os.Args[2:])
 	case "version":
@@ -252,6 +255,56 @@ func cmdInvite(args []string) error {
 		fmt.Fprintf(os.Stderr, "expire le %s\n", resp.ExpiresAt.Local().Format("2006-01-02 15:04:05"))
 	}
 	return nil
+}
+
+// cmdRoutes liste les routes annoncées/actives, ou approuve celles d'une
+// machine : « routes MACHINE 192.168.1.0/24,10.0.0.0/24 » (« none » pour
+// tout retirer).
+func cmdRoutes(args []string) error {
+	fs := flag.NewFlagSet("routes", flag.ExitOnError)
+	server := fs.String("server", "http://127.0.0.1:8080", "URL du serveur de coordination")
+	adminKey := fs.String("admin-key", os.Getenv("OMNIUP_ADMIN_KEY"), "clé admin du serveur")
+	fs.Parse(args)
+
+	if fs.NArg() >= 2 {
+		var routes []string
+		if fs.Arg(1) != "none" {
+			for _, r := range strings.Split(fs.Arg(1), ",") {
+				if r = strings.TrimSpace(r); r != "" {
+					routes = append(routes, r)
+				}
+			}
+		}
+		body, _ := json.Marshal(map[string][]string{"routes": routes})
+		var peer types.Peer
+		url := fmt.Sprintf("%s/api/v1/devices/%s/routes", *server, neturl.PathEscape(fs.Arg(0)))
+		if err := adminCall("PUT", url, *adminKey, bytes.NewReader(body), &peer); err != nil {
+			return err
+		}
+		fmt.Printf("routes actives pour %s : %s\n", peer.Hostname, joinOrDash(peer.Routes))
+		return nil
+	}
+
+	var peers []types.Peer
+	if err := adminCall("GET", *server+"/api/v1/devices", *adminKey, nil, &peers); err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "MACHINE\tANNONCÉES\tACTIVES (annoncées ∩ approuvées)")
+	for _, p := range peers {
+		if len(p.AdvertisedRoutes) == 0 && len(p.Routes) == 0 {
+			continue
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", p.Hostname, joinOrDash(p.AdvertisedRoutes), joinOrDash(p.Routes))
+	}
+	return tw.Flush()
+}
+
+func joinOrDash(s []string) string {
+	if len(s) == 0 {
+		return "—"
+	}
+	return strings.Join(s, ", ")
 }
 
 // cmdRevoke retire une machine du réseau (par IP, nom ou id).

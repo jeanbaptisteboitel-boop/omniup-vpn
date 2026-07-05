@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -50,8 +51,13 @@ type Device struct {
 	IP             string    `json:"ip"`
 	Endpoint       string    `json:"endpoint,omitempty"`  // observé par le serveur
 	Endpoints      []string  `json:"endpoints,omitempty"` // candidats rapportés par l'agent
-	CreatedAt      time.Time `json:"created_at"`
-	LastSeen       time.Time `json:"last_seen"`
+	// AdvertisedRoutes : sous-réseaux proposés par la machine ;
+	// ApprovedRoutes : ceux que l'administrateur a validés. Seule
+	// l'intersection est distribuée aux pairs.
+	AdvertisedRoutes []string  `json:"advertised_routes,omitempty"`
+	ApprovedRoutes   []string  `json:"approved_routes,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	LastSeen         time.Time `json:"last_seen"`
 }
 
 // AuthKey est une clé de pré-authentification permettant d'enrôler une machine.
@@ -322,8 +328,8 @@ func (st *Store) RotateTokenIfDue(publicKey string) (string, error) {
 }
 
 // TouchDevice met à jour la date de dernière activité, l'endpoint observé
-// par le serveur et les candidats rapportés par l'agent.
-func (st *Store) TouchDevice(publicKey, endpoint string, reported []string) error {
+// par le serveur, les candidats et les routes annoncées par l'agent.
+func (st *Store) TouchDevice(publicKey, endpoint string, reported, advertised []string) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	d, ok := st.s.Devices[publicKey]
@@ -337,7 +343,73 @@ func (st *Store) TouchDevice(publicKey, endpoint string, reported []string) erro
 	if reported != nil {
 		d.Endpoints = append([]string(nil), reported...)
 	}
+	if advertised != nil {
+		valid := advertised[:0:0]
+		for _, r := range advertised {
+			if c, err := normalizeCIDR(r); err == nil {
+				valid = append(valid, c)
+			}
+		}
+		d.AdvertisedRoutes = valid
+	}
 	return st.saveLocked()
+}
+
+// SetApprovedRoutes fixe les routes qu'une machine est autorisée à servir
+// (liste vide : tout retirer). La machine est désignée par IP, nom ou id.
+func (st *Store) SetApprovedRoutes(target string, routes []string) (*Device, error) {
+	normalized := make([]string, 0, len(routes))
+	for _, r := range routes {
+		c, err := normalizeCIDR(r)
+		if err != nil {
+			return nil, fmt.Errorf("route invalide %q: %w", r, err)
+		}
+		normalized = append(normalized, c)
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for _, d := range st.s.Devices {
+		if d.IP == target || d.Hostname == target || d.ID == target {
+			d.ApprovedRoutes = normalized
+			if err := st.saveLocked(); err != nil {
+				return nil, err
+			}
+			cp := *d
+			return &cp, nil
+		}
+	}
+	return nil, fmt.Errorf("aucune machine ne correspond à %q", target)
+}
+
+// activeRoutes renvoie l'intersection annoncées ∩ approuvées : ce que les
+// pairs doivent effectivement router vers cette machine.
+func activeRoutes(d Device) []string {
+	if len(d.AdvertisedRoutes) == 0 || len(d.ApprovedRoutes) == 0 {
+		return nil
+	}
+	approved := make(map[string]bool, len(d.ApprovedRoutes))
+	for _, r := range d.ApprovedRoutes {
+		approved[r] = true
+	}
+	var out []string
+	for _, r := range d.AdvertisedRoutes {
+		if approved[r] {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// normalizeCIDR valide et canonise une route (adresse réseau exacte).
+func normalizeCIDR(s string) (string, error) {
+	p, err := netip.ParsePrefix(strings.TrimSpace(s))
+	if err != nil {
+		return "", err
+	}
+	if !p.Addr().Is4() {
+		return "", errors.New("seul l'IPv4 est géré pour l'instant")
+	}
+	return p.Masked().String(), nil
 }
 
 // Devices renvoie une copie de toutes les machines, triée par IP.

@@ -201,6 +201,7 @@ L'interface expose la socket UAPI standard (`/var/run/wireguard/omni0.sock`) :
 | `POST` | `/api/v1/authkeys` | `Bearer` clé admin | Crée une clé d'enrôlement (`?reusable=true`) |
 | `GET` | `/api/v1/devices` | `Bearer` clé admin | Liste des machines |
 | `DELETE` | `/api/v1/devices/{cible}` | `Bearer` clé admin | Révoque une machine (IP, nom ou id) |
+| `PUT` | `/api/v1/devices/{cible}/routes` | `Bearer` clé admin | Approuve les routes d'une machine |
 | `GET` | `/api/v1/authkeys` | `Bearer` clé admin | Liste des clés d'enrôlement (masquées) |
 | `GET` | `/api/v1/acl` | `Bearer` clé admin | Politique d'accès courante |
 | `PUT` | `/api/v1/acl` | `Bearer` clé admin | Remplace la politique d'accès |
@@ -242,6 +243,49 @@ console web). Le contrôle d'accès se fait par domaine ou liste d'e-mails ;
 sans filtre, tout compte vérifié du fournisseur est accepté (un
 avertissement est journalisé). Les clés `--auth-key` restent utilisables
 en parallèle.
+
+## Subnet routing et exit nodes
+
+### Exposer un LAN entier (subnet router)
+
+Sur une machine Linux du réseau local à partager :
+
+```sh
+sudo omnid up --server … --advertise-routes 192.168.1.0/24
+```
+
+L'agent active le transfert IP et le masquerade automatiquement. Par
+sécurité, **rien n'est distribué tant que l'administrateur n'a pas
+approuvé** :
+
+```sh
+omni-server routes                                # voir les annonces
+omni-server routes nas-maison 192.168.1.0/24      # approuver
+omni-server routes nas-maison none                # tout retirer
+```
+
+Les autres machines reçoivent alors la route (AllowedIPs + route système,
+automatique, désactivable avec `--accept-routes=false`) et joignent
+`192.168.1.x` à travers le tunnel.
+
+### Router tout Internet via un pair (exit node)
+
+Côté machine qui sert de sortie (Linux, typiquement un VPS) :
+
+```sh
+sudo omnid up --server … --advertise-exit-node
+omni-server routes vps-sortie 0.0.0.0/0           # approbation admin
+```
+
+Côté machine qui veut sortir par là (Linux) :
+
+```sh
+sudo omnid up --server … --exit-node vps-sortie
+```
+
+Tout le trafic Internet part alors chiffré vers l'exit node (policy
+routing par fwmark, technique wg-quick : le trafic WireGuard et le trafic
+de contrôle échappent au tunnel, les routes LAN restent prioritaires).
 
 ## Espace utilisateur (`/portal`)
 
@@ -362,6 +406,10 @@ Les prochaines étapes, par ordre de priorité :
 - [x] **Comptes utilisateurs et espace personnel** (`/portal`) :
       inscription sur invitation (ou ouverte), chaque utilisateur
       connecte et gère ses propres machines
+- [x] **Subnet routing et exit nodes** avec approbation admin
+      (`--advertise-routes`, `--advertise-exit-node`, `--exit-node` —
+      rôles routeur et client exit node : Linux ; acceptation de routes :
+      les trois OS)
 - [x] **Support macOS et Windows** de l'agent (utun + ifconfig/route sur
       macOS, Wintun + netsh sur Windows, pipe nommé UAPI ; binaires dans
       chaque release)

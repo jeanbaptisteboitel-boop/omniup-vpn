@@ -41,6 +41,13 @@ func (c *Client) Register(authKey, hostname, publicKey string) (*types.RegisterR
 	return &resp, nil
 }
 
+// SetHTTPClient remplace le client HTTP (transport marqué en mode exit node).
+func (c *Client) SetHTTPClient(h *http.Client) {
+	if h != nil {
+		c.http = h
+	}
+}
+
 // EnrollStart ouvre une session d'enrôlement SSO.
 func (c *Client) EnrollStart(hostname, publicKey string) (*types.EnrollStartResponse, error) {
 	var resp types.EnrollStartResponse

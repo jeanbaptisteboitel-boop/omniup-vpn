@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
@@ -42,6 +43,12 @@ type Options struct {
 	RelayServer string   // vide : déduit du serveur de coordination ; "off" : désactivé
 	DNS         bool     // activer le DNS interne sur l'adresse overlay
 	DNSZone     string   // zone interne, ex: "omni"
+
+	// Subnet routing / exit node.
+	AdvertiseRoutes   []string // sous-réseaux proposés (approbation admin requise)
+	AdvertiseExitNode bool     // proposer de router tout Internet (0.0.0.0/0)
+	ExitNode          string   // router tout notre trafic via ce pair (IP ou nom)
+	AcceptRoutes      bool     // installer les routes des pairs (défaut : oui)
 }
 
 // Up enregistre la machine si nécessaire, démarre le moteur WireGuard
@@ -168,11 +175,39 @@ func Up(ctx context.Context, opts Options) error {
 		log.Printf("dns interne sur %s (zone %s)", addr, dnsSrv.Zone())
 	}
 
+	// Rôle routeur : routes annoncées (l'admin devra les approuver).
+	advertised, myRoutes, err := advertisedRoutes(opts)
+	if err != nil {
+		return err
+	}
+	if len(advertised) > 0 {
+		log.Printf("routes annoncées: %v (en attente d'approbation par l'administrateur)", advertised)
+		if err := enableForwarding(dev.Name, st.CIDR); err != nil {
+			log.Printf("attention, transfert IP incomplet: %v", err)
+		}
+	}
+
+	// Mode exit node : tout notre trafic part via ce pair — policy
+	// routing par fwmark, et trafic de contrôle marqué pour l'éviter.
+	if opts.ExitNode != "" {
+		if err := dev.EnableExitNode(); err != nil {
+			return fmt.Errorf("exit node: %w", err)
+		}
+		defer dev.DisableExitNode()
+		log.Printf("exit node demandé: %s (tout le trafic Internet passera par ce pair)", opts.ExitNode)
+	}
+
 	mgr := NewEndpointManager(dev, bind)
 	client := NewClient(st.ServerURL, st.DeviceToken)
+	if opts.ExitNode != "" {
+		if h := markedHTTPClient(); h != nil {
+			client.SetHTTPClient(h)
+		}
+	}
 	knownPeers := map[string]bool{}
 	var myEndpoints []string
 	var lastSTUN time.Time
+	exitPeerSeen := true
 
 	sync := func() {
 		// 0. Maintien de l'enregistrement auprès du relais de secours.
@@ -195,7 +230,11 @@ func Up(ctx context.Context, opts Options) error {
 		}
 
 		// 2. Heartbeat + carte du réseau.
-		nm, err := client.Poll(types.PollRequest{ListenPort: st.ListenPort, Endpoints: myEndpoints})
+		nm, err := client.Poll(types.PollRequest{
+			ListenPort:       st.ListenPort,
+			Endpoints:        myEndpoints,
+			AdvertisedRoutes: advertised,
+		})
 		if err != nil {
 			log.Printf("poll: %v", err)
 			return
@@ -212,13 +251,33 @@ func Up(ctx context.Context, opts Options) error {
 			}
 		}
 
-		// 3. Synchronisation des pairs (sans toucher aux endpoints établis).
-		if err := dev.SyncPeers(nm.Peers, knownPeers, InitialEndpoint); err != nil {
+		// 3. Filtrage des routes des pairs : 0.0.0.0/0 seulement pour
+		// l'exit node choisi, sous-réseaux seulement si acceptés, et
+		// jamais nos propres routes.
+		peers, subnetRoutes, exitFound := filterRoutes(nm.Peers, opts, myRoutes)
+		if opts.ExitNode != "" && exitFound != exitPeerSeen {
+			exitPeerSeen = exitFound
+			if exitFound {
+				log.Printf("exit node %s actif", opts.ExitNode)
+			} else {
+				log.Printf("attention : exit node %s introuvable ou sans route 0.0.0.0/0 approuvée — trafic Internet coupé", opts.ExitNode)
+			}
+		}
+
+		// 4. Synchronisation des pairs (sans toucher aux endpoints établis).
+		if err := dev.SyncPeers(peers, knownPeers, InitialEndpoint); err != nil {
 			log.Printf("synchronisation wireguard: %v", err)
 			return
 		}
 
-		// 4. Perçage NAT pour les pairs sans chemin actif.
+		// 5. Routes système des sous-réseaux acceptés.
+		if opts.AcceptRoutes {
+			if err := dev.SetRoutes(subnetRoutes); err != nil {
+				log.Printf("routes: %v", err)
+			}
+		}
+
+		// 6. Perçage NAT pour les pairs sans chemin actif.
 		mgr.Observe(nm.Peers)
 		mgr.Probe()
 
@@ -240,6 +299,63 @@ func Up(ctx context.Context, opts Options) error {
 			sync()
 		}
 	}
+}
+
+// advertisedRoutes valide et canonise les routes annoncées via les
+// options ; myRoutes permet de ne jamais réinstaller ses propres routes.
+func advertisedRoutes(opts Options) (advertised []string, myRoutes map[string]bool, err error) {
+	myRoutes = map[string]bool{}
+	all := append([]string(nil), opts.AdvertiseRoutes...)
+	if opts.AdvertiseExitNode {
+		all = append(all, "0.0.0.0/0")
+	}
+	for _, r := range all {
+		p, perr := netip.ParsePrefix(strings.TrimSpace(r))
+		if perr != nil {
+			return nil, nil, fmt.Errorf("route annoncée invalide %q: %w", r, perr)
+		}
+		c := p.Masked().String()
+		if !myRoutes[c] {
+			myRoutes[c] = true
+			advertised = append(advertised, c)
+		}
+	}
+	return advertised, myRoutes, nil
+}
+
+// filterRoutes prépare les routes des pairs pour WireGuard et le système :
+// renvoie les pairs avec leurs routes filtrées, la liste des sous-réseaux
+// à installer, et si l'exit node demandé a été trouvé (avec 0.0.0.0/0).
+func filterRoutes(in []types.Peer, opts Options, myRoutes map[string]bool) ([]types.Peer, []string, bool) {
+	peers := make([]types.Peer, len(in))
+	var subnets []string
+	seen := map[string]bool{}
+	exitFound := false
+	for i, p := range in {
+		cp := p
+		var keep []string
+		isExit := opts.ExitNode != "" && (p.IP == opts.ExitNode || p.Hostname == opts.ExitNode)
+		for _, r := range p.Routes {
+			if r == "0.0.0.0/0" {
+				if isExit {
+					keep = append(keep, r)
+					exitFound = true
+				}
+				continue
+			}
+			if !opts.AcceptRoutes || myRoutes[r] {
+				continue
+			}
+			keep = append(keep, r)
+			if !seen[r] {
+				seen[r] = true
+				subnets = append(subnets, r)
+			}
+		}
+		cp.Routes = keep
+		peers[i] = cp
+	}
+	return peers, subnets, exitFound
 }
 
 // enrollSSO déroule l'enrôlement par navigateur : affiche l'URL et sonde
