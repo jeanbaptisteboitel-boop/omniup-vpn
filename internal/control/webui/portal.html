@@ -177,11 +177,11 @@ function commands() {
   switch (OS) {
     case "linux": return `curl -fsSL https://raw.githubusercontent.com/jeanbaptisteboitel-boop/omniup-vpn/main/scripts/install-omnid.sh \\
   | sudo sh -s -- --server ${SERVER} --auth-key ${AUTHKEY}`;
-    case "macos": return `# téléchargez omnid-darwin-arm64 (ou amd64) depuis les releases GitHub, puis :
-sudo ./omnid-darwin-arm64 up --server ${SERVER} --auth-key ${AUTHKEY}`;
-    case "windows": return `# téléchargez omnid-windows-amd64.exe + wintun.dll (wintun.net),
-# puis dans un terminal administrateur :
-.\\omnid-windows-amd64.exe up --server ${SERVER} --auth-key ${AUTHKEY}`;
+    case "macos": return `curl -fsSL https://raw.githubusercontent.com/jeanbaptisteboitel-boop/omniup-vpn/main/scripts/install-omnid-macos.sh \\
+  | sudo sh -s -- --server ${SERVER} --auth-key ${AUTHKEY}`;
+    case "windows": return `# dans un PowerShell administrateur :
+iwr -useb https://raw.githubusercontent.com/jeanbaptisteboitel-boop/omniup-vpn/main/scripts/install-omnid.ps1 -OutFile "$env:TEMP\\install-omnid.ps1"
+& "$env:TEMP\\install-omnid.ps1" -Server ${SERVER} -AuthKey ${AUTHKEY}`;
   }
 }
 document.querySelectorAll(".oschoice button").forEach(b => b.onclick = () => {

@@ -33,6 +33,8 @@ Usage :
                [--mtu 1280] [--stun hôte:3478,...] [--relay hôte:3479] [--dns=true] [--dns-zone omni]
   omnid status
   omnid down
+  omnid service install --server URL --auth-key CLÉ   (Windows : service au démarrage)
+  omnid service uninstall
 
 Sans --auth-key, l'enrôlement passe par le SSO du serveur (si configuré) :
 une URL s'affiche, ouvrez-la dans un navigateur pour authentifier la machine.
@@ -59,6 +61,8 @@ func main() {
 		err = cmdStatus(os.Args[2:])
 	case "down":
 		err = cmdDown(os.Args[2:])
+	case "service":
+		err = cmdService(os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	default:
@@ -94,10 +98,11 @@ func defaultIface() string {
 	return "omni0"
 }
 
-func cmdUp(args []string) error {
-	fs := flag.NewFlagSet("up", flag.ExitOnError)
+// parseUpOptions lit les flags communs à « up » et au service Windows.
+func parseUpOptions(name string, args []string) agent.Options {
+	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	server := fs.String("server", "", "URL du serveur de coordination (ex: https://vpn.example.com)")
-	authKey := fs.String("auth-key", "", "clé d'enrôlement (requise à la première connexion)")
+	authKey := fs.String("auth-key", "", "clé d'enrôlement (sinon : enrôlement SSO)")
 	hostname := fs.String("hostname", defaultHostname(), "nom de la machine sur le réseau")
 	iface := fs.String("iface", defaultIface(), "nom de l'interface")
 	port := fs.Int("port", 41641, "port d'écoute UDP WireGuard")
@@ -117,11 +122,7 @@ func cmdUp(args []string) error {
 			}
 		}
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	return agent.Up(ctx, agent.Options{
+	return agent.Options{
 		ServerURL:   *server,
 		AuthKey:     *authKey,
 		Hostname:    *hostname,
@@ -133,7 +134,14 @@ func cmdUp(args []string) error {
 		RelayServer: *relaySrv,
 		DNS:         *dnsOn,
 		DNSZone:     *dnsZone,
-	})
+	}
+}
+
+func cmdUp(args []string) error {
+	opts := parseUpOptions("up", args)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return agent.Up(ctx, opts)
 }
 
 func cmdStatus(args []string) error {

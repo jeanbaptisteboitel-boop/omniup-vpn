@@ -113,26 +113,34 @@ L'interface vit avec le démon : elle disparaît à son arrêt, et
 
 #### macOS
 
+Une commande, comme sur Linux — télécharge le binaire, enrôle et installe
+un LaunchDaemon (démarrage automatique) :
+
 ```sh
-sudo ./omnid-darwin-arm64 up --server http://SERVEUR:8080 --auth-key omkey-…
+curl -fsSL https://raw.githubusercontent.com/jeanbaptisteboitel-boop/omniup-vpn/main/scripts/install-omnid-macos.sh \
+  | sudo sh -s -- --server http://SERVEUR:8080 --auth-key omkey-…
 ```
 
-Le système attribue le nom d'interface (`utun4`…) ; l'identité est
-persistée dans `/Library/Application Support/OmniUp/`. Tout le reste est
-identique (perçage NAT, relais, DNS interne, `status`, `down`).
+Le système attribue le nom d'interface (`utun4`…) ; identité dans
+`/Library/Application Support/OmniUp/`, journal dans
+`/Library/Logs/omnid.log`. Tout le reste est identique (perçage NAT,
+relais, DNS interne, `status`, `down`).
 
 #### Windows
 
-Téléchargez [`wintun.dll`](https://www.wintun.net) (dossier `bin/amd64` de
-l'archive) et placez-la à côté de `omnid-windows-amd64.exe`, puis dans un
-terminal **administrateur** :
+Dans un PowerShell **administrateur** — télécharge le binaire et
+`wintun.dll`, puis enregistre un **service Windows** (démarrage
+automatique, tourne sans fenêtre ouverte) :
 
 ```powershell
-.\omnid-windows-amd64.exe up --server http://SERVEUR:8080 --auth-key omkey-…
+iwr -useb https://raw.githubusercontent.com/jeanbaptisteboitel-boop/omniup-vpn/main/scripts/install-omnid.ps1 -OutFile "$env:TEMP\install-omnid.ps1"
+& "$env:TEMP\install-omnid.ps1" -Server http://SERVEUR:8080 -AuthKey omkey-…
 ```
 
-L'adaptateur `omni0` apparaît dans les connexions réseau ; l'identité est
-persistée dans `C:\ProgramData\OmniUp\`.
+L'adaptateur `omni0` apparaît dans les connexions réseau ; identité dans
+`C:\ProgramData\OmniUp\`, journal dans `C:\ProgramData\OmniUp\omnid.log`.
+Gestion : `omnid.exe service uninstall`, ou `services.msc` (service
+« OmniUp VPN »).
 
 ### 5. Vérifier
 
