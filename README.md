@@ -42,7 +42,7 @@ que le magicsock de Tailscale, en miniature.
 
 ```sh
 make build     # produit bin/omni-server et bin/omnid
-make dist      # binaires statiques linux amd64 + arm64 dans dist/
+make dist      # binaires statiques : agent linux/macOS/windows, serveur linux
 ```
 
 Des binaires précompilés sont attachés à chaque
@@ -110,6 +110,29 @@ monte l'interface `omni0` (userspace) et synchronise les pairs toutes les
 démarrages suivants, `sudo omnid up` suffit (plus besoin de clé).
 L'interface vit avec le démon : elle disparaît à son arrêt, et
 `sudo omnid down` arrête le démon en cours.
+
+#### macOS
+
+```sh
+sudo ./omnid-darwin-arm64 up --server http://SERVEUR:8080 --auth-key omkey-…
+```
+
+Le système attribue le nom d'interface (`utun4`…) ; l'identité est
+persistée dans `/Library/Application Support/OmniUp/`. Tout le reste est
+identique (perçage NAT, relais, DNS interne, `status`, `down`).
+
+#### Windows
+
+Téléchargez [`wintun.dll`](https://www.wintun.net) (dossier `bin/amd64` de
+l'archive) et placez-la à côté de `omnid-windows-amd64.exe`, puis dans un
+terminal **administrateur** :
+
+```powershell
+.\omnid-windows-amd64.exe up --server http://SERVEUR:8080 --auth-key omkey-…
+```
+
+L'adaptateur `omni0` apparaît dans les connexions réseau ; l'identité est
+persistée dans `C:\ProgramData\OmniUp\`.
 
 ### 5. Vérifier
 
@@ -306,8 +329,9 @@ Les prochaines étapes, par ordre de priorité :
       grâce d'une heure pour l'ancien jeton)
 - [x] **Console web d'administration** embarquée (`/admin`) : machines,
       clés d'enrôlement, ACLs, révocation
-- [ ] Support macOS/Windows (le moteur userspace rend le portage possible ;
-      il reste l'adressage et les routes par plateforme)
+- [x] **Support macOS et Windows** de l'agent (utun + ifconfig/route sur
+      macOS, Wintun + netsh sur Windows, pipe nommé UAPI ; binaires dans
+      chaque release)
 - [x] **SSO/OIDC** : enrôlement par navigateur via un fournisseur
       d'identité, machines rattachées à un e-mail, filtre par domaine
       ou liste d'e-mails

@@ -3,7 +3,6 @@ package wgnet
 import (
 	"bufio"
 	"fmt"
-	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -27,7 +26,7 @@ type DeviceStatus struct {
 // QueryStatus interroge la socket UAPI d'une interface (celle qu'expose le
 // démon omnid) — utilisable depuis un autre processus, comme « wg show ».
 func QueryStatus(iface string) (*DeviceStatus, error) {
-	conn, err := net.DialTimeout("unix", "/var/run/wireguard/"+iface+".sock", 2*time.Second)
+	conn, err := dialUAPI(iface)
 	if err != nil {
 		return nil, fmt.Errorf("démon omnid inactif pour %s ? (%w)", iface, err)
 	}

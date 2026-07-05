@@ -11,6 +11,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -69,7 +71,27 @@ func main() {
 }
 
 func defaultStatePath() string {
-	return "/var/lib/omniup/omnid.json"
+	switch runtime.GOOS {
+	case "windows":
+		base := os.Getenv("ProgramData")
+		if base == "" {
+			base = `C:\ProgramData`
+		}
+		return filepath.Join(base, "OmniUp", "omnid.json")
+	case "darwin":
+		return "/Library/Application Support/OmniUp/omnid.json"
+	default:
+		return "/var/lib/omniup/omnid.json"
+	}
+}
+
+// defaultIface : macOS impose les noms utun* (le système attribue le
+// numéro) ; ailleurs on choisit librement.
+func defaultIface() string {
+	if runtime.GOOS == "darwin" {
+		return "utun"
+	}
+	return "omni0"
 }
 
 func cmdUp(args []string) error {
@@ -77,7 +99,7 @@ func cmdUp(args []string) error {
 	server := fs.String("server", "", "URL du serveur de coordination (ex: https://vpn.example.com)")
 	authKey := fs.String("auth-key", "", "clé d'enrôlement (requise à la première connexion)")
 	hostname := fs.String("hostname", defaultHostname(), "nom de la machine sur le réseau")
-	iface := fs.String("iface", "omni0", "nom de l'interface")
+	iface := fs.String("iface", defaultIface(), "nom de l'interface")
 	port := fs.Int("port", 41641, "port d'écoute UDP WireGuard")
 	mtu := fs.Int("mtu", wgnet.DefaultMTU, "MTU de l'interface")
 	stunList := fs.String("stun", "", "serveurs STUN hôte:port séparés par des virgules (défaut : serveur de coordination, port 3478)")
@@ -181,7 +203,7 @@ func cmdDown(args []string) error {
 	if err != nil {
 		return fmt.Errorf("fichier pid corrompu: %w", err)
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	if err := stopProcess(pid); err != nil {
 		return fmt.Errorf("arrêt du démon (pid %d): %w", pid, err)
 	}
 	fmt.Printf("démon omnid arrêté (pid %d) — l'interface disparaît avec lui\n", pid)

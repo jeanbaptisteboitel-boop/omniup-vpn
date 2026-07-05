@@ -12,9 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vishvananda/netlink"
 	"golang.zx2c4.com/wireguard/device"
-	"golang.zx2c4.com/wireguard/ipc"
 	"golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 
@@ -73,20 +71,19 @@ func StartWithTUN(tunDev tun.Device, name string, privateKey wgtypes.Key, listen
 	d := &Device{Name: name, Bind: bind, tun: tunDev, dev: dev}
 
 	// Socket UAPI : facultative (permet « wg show » et « omnid status »).
+	// Socket unix sous Linux/macOS, pipe nommé sous Windows.
 	if withUAPI {
-		if fileUAPI, err := ipc.UAPIOpen(name); err == nil {
-			if uapi, err := ipc.UAPIListen(name, fileUAPI); err == nil {
-				d.uapi = uapi
-				go func() {
-					for {
-						c, err := uapi.Accept()
-						if err != nil {
-							return
-						}
-						go dev.IpcHandle(c)
+		if uapi, err := uapiListen(name); err == nil {
+			d.uapi = uapi
+			go func() {
+				for {
+					c, err := uapi.Accept()
+					if err != nil {
+						return
 					}
-				}()
-			}
+					go dev.IpcHandle(c)
+				}
+			}()
 		}
 	}
 	return d, nil
@@ -100,29 +97,15 @@ func (d *Device) Close() {
 	d.dev.Close()
 }
 
-// SetAddress attribue l'adresse overlay (au sein de cidr, pour installer la
-// route du réseau) et active l'interface.
+// SetAddress attribue l'adresse overlay (au sein de cidr, pour installer
+// la route du réseau) et active l'interface. Implémentation par
+// plateforme : netlink (Linux), ifconfig+route (macOS), netsh (Windows).
 func (d *Device) SetAddress(ip, cidr string) error {
 	_, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
 		return fmt.Errorf("cidr invalide %q: %w", cidr, err)
 	}
-	ones, _ := ipnet.Mask.Size()
-	link, err := netlink.LinkByName(d.Name)
-	if err != nil {
-		return err
-	}
-	addr, err := netlink.ParseAddr(fmt.Sprintf("%s/%d", ip, ones))
-	if err != nil {
-		return err
-	}
-	if err := netlink.AddrReplace(link, addr); err != nil {
-		return fmt.Errorf("adressage de %s: %w", d.Name, err)
-	}
-	if err := netlink.LinkSetUp(link); err != nil {
-		return fmt.Errorf("activation de %s: %w", d.Name, err)
-	}
-	return nil
+	return d.setAddress(ip, ipnet)
 }
 
 // SyncPeers aligne la liste des pairs du moteur sur la carte du réseau,

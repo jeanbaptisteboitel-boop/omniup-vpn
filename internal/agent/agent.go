@@ -115,6 +115,15 @@ func Up(ctx context.Context, opts Options) error {
 	log.Printf("interface %s active (%s), moteur WireGuard userspace, port %d",
 		dev.Name, st.IP, bind.LocalPort())
 
+	// Sur macOS le système attribue le nom réel (utun4…) : on le persiste
+	// pour que « omnid status » interroge la bonne interface.
+	if st.Iface != dev.Name {
+		st.Iface = dev.Name
+		if err := st.Save(opts.StatePath); err != nil {
+			log.Printf("sauvegarde du nom d'interface: %v", err)
+		}
+	}
+
 	writePidFile(opts.StatePath)
 	defer removePidFile(opts.StatePath)
 

@@ -18,18 +18,8 @@ jobs:
           go-version-file: go.mod
       - name: Tests
         run: go test ./...
-      - name: Build (linux amd64 + arm64)
-        run: |
-          mkdir -p dist
-          for arch in amd64 arm64; do
-            for cmd in omnid omni-server; do
-              CGO_ENABLED=0 GOOS=linux GOARCH=$arch \
-                go build -trimpath \
-                  -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" \
-                  -o "dist/${cmd}-linux-${arch}" "./cmd/${cmd}"
-            done
-          done
-          (cd dist && sha256sum * > SHA256SUMS)
+      - name: Build (linux, macOS, windows)
+        run: make dist VERSION=${GITHUB_REF_NAME}
       - name: Publier la release
         uses: softprops/action-gh-release@v2
         with:
