@@ -3,6 +3,7 @@ module github.com/jeanbaptisteboitel-boop/omniup-vpn
 go 1.25.0
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/coreos/go-oidc/v3 v3.19.0
 	github.com/miekg/dns v1.1.72
 	github.com/vishvananda/netlink v1.3.1
@@ -15,6 +16,7 @@ require (
 
 require (
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/btree v1.0.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	golang.org/x/mod v0.31.0 // indirect

@@ -4,7 +4,25 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 )
+
+// DefaultStatePath renvoie l'emplacement standard du fichier d'identité
+// selon l'OS (partagé par l'agent omnid et l'app systray).
+func DefaultStatePath() string {
+	switch runtime.GOOS {
+	case "windows":
+		base := os.Getenv("ProgramData")
+		if base == "" {
+			base = `C:\ProgramData`
+		}
+		return filepath.Join(base, "OmniUp", "omnid.json")
+	case "darwin":
+		return "/Library/Application Support/OmniUp/omnid.json"
+	default:
+		return "/var/lib/omniup/omnid.json"
+	}
+}
 
 // State est l'identité persistée de la machine (survit aux redémarrages).
 // Le fichier contient la clé privée WireGuard : il est écrit en mode 0600.

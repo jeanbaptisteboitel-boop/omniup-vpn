@@ -1,4 +1,4 @@
-.PHONY: build test vet clean dist docker
+.PHONY: build test vet clean dist docker packages gui
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  = -s -w -X main.version=$(VERSION)
@@ -35,6 +35,30 @@ dist:
 
 docker:
 	docker build --build-arg VERSION=$(VERSION) -t omniup-vpn:$(VERSION) .
+
+# Application de barre d'état (systray) — compilation native uniquement
+# (utilise les API graphiques de l'OS ; non incluse dans « dist »).
+gui:
+	mkdir -p bin
+	go build -ldflags="$(LDFLAGS)" -o bin/omnid-gui ./cmd/omnid-gui
+
+# Paquets .deb et .rpm (agent + serveur) via nfpm. Nécessite « dist ».
+# La version nfpm ne doit pas contenir de préfixe « v ».
+packages: dist
+	@command -v nfpm >/dev/null || { echo "nfpm requis : go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest"; exit 1; }
+	VER=$$(echo "$(VERSION)" | sed 's/^v//'); \
+	for arch in amd64 arm64; do \
+		cp dist/omnid-linux-$$arch dist/omnid.pkgbin; \
+		cp dist/omni-server-linux-$$arch dist/omni-server.pkgbin; \
+		for pkg in omnid omni-server; do \
+			for fmt in deb rpm; do \
+				ARCH=$$arch VERSION=$$VER nfpm package \
+					-f packaging/$$pkg.nfpm.yaml -p $$fmt -t dist/ || exit 1; \
+			done; \
+		done; \
+	done
+	@rm -f dist/omnid.pkgbin dist/omni-server.pkgbin
+	@ls -1 dist/*.deb dist/*.rpm
 
 clean:
 	rm -rf bin dist

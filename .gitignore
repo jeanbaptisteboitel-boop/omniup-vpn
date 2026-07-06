@@ -2,3 +2,5 @@
 /dist/
 omni-server.json
 *.test
+/omnid-gui
+cmd/omnid-gui/omnid-gui

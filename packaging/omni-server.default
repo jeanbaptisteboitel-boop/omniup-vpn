@@ -1,0 +1,10 @@
+# Options du serveur de coordination OmniUp VPN, passées à « omni-server serve ».
+#
+# Exemples :
+#   OPTIONS="--public-url https://vpn.omniup.fr"
+#   OPTIONS="--cidr 100.64.0.0/16 --oidc-issuer https://accounts.google.com \
+#            --oidc-client-id XXX --public-url https://vpn.omniup.fr"
+#
+# Le secret OIDC se met de préférence dans une variable d'environnement :
+#   OMNIUP_OIDC_CLIENT_SECRET=...
+OPTIONS=""

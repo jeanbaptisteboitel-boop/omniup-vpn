@@ -1,0 +1,35 @@
+# Paquet de l'agent OmniUp VPN (.deb / .rpm), généré par nfpm.
+# Build : nfpm package -f packaging/omnid.nfpm.yaml -p deb -t dist/
+name: omnid
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: OmniUp <noreply@omniup.fr>
+description: |
+  Agent OmniUp VPN — réseau mesh WireGuard auto-hébergé.
+  Connecte la machine au réseau overlay et maintient les tunnels
+  WireGuard vers les pairs (perçage NAT, relais de secours, DNS interne).
+homepage: https://github.com/jeanbaptisteboitel-boop/omniup-vpn
+license: MIT
+contents:
+  - src: ./dist/omnid.pkgbin
+    dst: /usr/bin/omnid
+    file_info:
+      mode: 0755
+  - src: ./deploy/systemd/omnid.service
+    dst: /lib/systemd/system/omnid.service
+  - src: ./packaging/omnid.default
+    dst: /etc/default/omnid
+    type: config|noreplace
+overrides:
+  deb:
+    depends:
+      - iproute2
+  rpm:
+    depends:
+      - iproute
+scripts:
+  postinstall: ./packaging/postinstall.sh
+  preremove: ./packaging/preremove.sh

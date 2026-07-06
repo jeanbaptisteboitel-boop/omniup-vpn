@@ -20,10 +20,21 @@ jobs:
         run: go test ./...
       - name: Build (linux, macOS, windows)
         run: make dist VERSION=${GITHUB_REF_NAME}
+      - name: Paquets .deb / .rpm
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Construire les paquets
+        run: make packages VERSION=${GITHUB_REF_NAME}
       - name: Publier la release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: |
+            dist/omnid-*
+            dist/omni-server-*
+            dist/*.deb
+            dist/*.rpm
+            dist/SHA256SUMS
           generate_release_notes: true
 
   docker:

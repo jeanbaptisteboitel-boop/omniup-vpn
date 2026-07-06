@@ -1,0 +1,11 @@
+# Options de l'agent OmniUp VPN, passées à « omnid up » par systemd.
+#
+# Au premier démarrage, enrôlez la machine à la main :
+#   sudo omnid up --server https://vpn.omniup.fr --auth-key omkey-…
+# L'identité est ensuite persistée ; renseignez au moins --server ici pour
+# que le service redémarre correctement, puis : systemctl enable --now omnid
+#
+# Exemples :
+#   OPTIONS="--server https://vpn.omniup.fr"
+#   OPTIONS="--server https://vpn.omniup.fr --advertise-routes 192.168.1.0/24"
+OPTIONS=""

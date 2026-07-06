@@ -11,7 +11,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -77,18 +76,7 @@ func main() {
 }
 
 func defaultStatePath() string {
-	switch runtime.GOOS {
-	case "windows":
-		base := os.Getenv("ProgramData")
-		if base == "" {
-			base = `C:\ProgramData`
-		}
-		return filepath.Join(base, "OmniUp", "omnid.json")
-	case "darwin":
-		return "/Library/Application Support/OmniUp/omnid.json"
-	default:
-		return "/var/lib/omniup/omnid.json"
-	}
+	return agent.DefaultStatePath()
 }
 
 // defaultIface : macOS impose les noms utun* (le système attribue le

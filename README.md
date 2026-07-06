@@ -45,10 +45,22 @@ make build     # produit bin/omni-server et bin/omnid
 make dist      # binaires statiques : agent linux/macOS/windows, serveur linux
 ```
 
-Des binaires précompilés sont attachés à chaque
-[release GitHub](https://github.com/jeanbaptisteboitel-boop/omniup-vpn/releases),
-et l'image Docker du serveur est publiée sur
+Des binaires précompilés, des **paquets `.deb`/`.rpm`** (agent et serveur)
+et les sommes SHA256 sont attachés à chaque
+[release GitHub](https://github.com/jeanbaptisteboitel-boop/omniup-vpn/releases) ;
+l'image Docker du serveur est publiée sur
 `ghcr.io/jeanbaptisteboitel-boop/omniup-vpn`.
+
+Installation par paquet (mises à jour gérées par le système) :
+
+```sh
+# Debian / Ubuntu
+sudo dpkg -i omnid_0.1.0_amd64.deb          # ou omni-server_…
+# Fedora / RHEL
+sudo rpm -i  omnid-0.1.0-1.x86_64.rpm
+# macOS (Homebrew)
+brew install jeanbaptisteboitel-boop/omniup/omnid
+```
 
 ### 2. Lancer le serveur de coordination
 
@@ -416,6 +428,11 @@ Les prochaines étapes, par ordre de priorité :
 - [x] **SSO/OIDC** : enrôlement par navigateur via un fournisseur
       d'identité, machines rattachées à un e-mail, filtre par domaine
       ou liste d'e-mails
+- [x] **Paquets natifs** `.deb`/`.rpm` (nfpm) et formule Homebrew, publiés
+      à chaque release
+- [x] **Application de barre d'état** (`omnid-gui`, systray multiplateforme)
+- [ ] Signature de code (notarisation Apple, certificat Windows) pour
+      supprimer les avertissements de sécurité à l'installation
 
 ## Déploiement
 
@@ -437,6 +454,24 @@ dépannage).
   binaires statiques linux amd64/arm64 (+ SHA256SUMS) et l'image
   multi-arch sur ghcr. Créer une release : `git tag v0.1.0 && git push --tags`.
 - `omnid version` / `omni-server version` affichent la version embarquée.
+
+## Application de barre d'état (systray)
+
+`omnid-gui` est un tableau de bord graphique léger : une icône près de
+l'horloge qui indique l'état de connexion (verte/grise), liste les
+machines du réseau avec leur état en ligne, et ouvre la console web. Elle
+lit l'identité posée par l'agent et interroge le serveur — elle ne monte
+pas le tunnel elle-même (c'est le rôle du démon `omnid`).
+
+```sh
+make gui        # produit bin/omnid-gui (compilation native)
+./bin/omnid-gui
+```
+
+Compilation native uniquement (elle utilise les API graphiques de chaque
+OS) : elle n'est pas incluse dans `make dist`. Sous Linux, elle nécessite
+un environnement de bureau exposant une zone de notification
+(StatusNotifier/AppIndicator).
 
 ## Développement
 
