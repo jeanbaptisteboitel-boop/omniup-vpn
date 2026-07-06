@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OmniUp VPN — mon espace</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1a1d21; --muted: #6b7280;
+    --border: #e3e6ea; --accent: #2563eb; --ok: #16a34a; --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101317; --panel: #181c22; --text: #e5e7eb; --muted: #9ca3af;
+      --border: #2a2f37; --accent: #60a5fa; --ok: #4ade80; --bad: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: baseline; gap: 1rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 1.1rem; margin: 0; }
+  header .spacer { flex: 1; }
+  header .who { color: var(--muted); font-size: .9rem; }
+  main { max-width: 56rem; margin: 0 auto; padding: 1.5rem; }
+  section.panel { background: var(--panel); border: 1px solid var(--border); border-radius: .75rem; padding: 1.25rem; margin-bottom: 1.25rem; }
+  h2 { font-size: 1rem; margin: 0 0 .75rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
+  tr:last-child td { border-bottom: none; }
+  .dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; margin-right: .4rem; }
+  .on  { background: var(--ok); } .off { background: var(--muted); }
+  code { font-family: ui-monospace, monospace; font-size: .85em; }
+  pre { background: var(--bg); border: 1px solid var(--border); border-radius: .5rem; padding: .75rem; overflow-x: auto; font-size: .8rem; }
+  button.action { padding: .3rem .7rem; border-radius: .4rem; border: 1px solid var(--border); background: transparent; color: var(--bad); cursor: pointer; }
+  button.primary { padding: .5rem 1rem; border-radius: .5rem; border: none; background: var(--accent); color: #fff; cursor: pointer; font-weight: 600; }
+  button.link { border: none; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
+  input, select { padding: .5rem .65rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--bg); color: var(--text); font: inherit; width: 100%; margin-bottom: .75rem; }
+  .msg { margin: .75rem 0 0; padding: .6rem .9rem; border-radius: .5rem; font-size: .9rem; display: none; }
+  .msg.err { display: block; background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+  #auth { max-width: 26rem; margin: 3rem auto; }
+  .muted { color: var(--muted); }
+  .tabs { display: flex; gap: 1rem; margin-bottom: 1rem; font-size: .95rem; }
+  .tabs button.link[aria-selected="true"] { font-weight: 700; text-decoration: underline; }
+  .oschoice { display: flex; gap: .5rem; margin: .75rem 0 .25rem; }
+  .oschoice button { padding: .3rem .8rem; border: 1px solid var(--border); border-radius: .4rem; background: var(--panel); color: var(--text); cursor: pointer; font-size: .85rem; }
+  .oschoice button.sel { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OmniUp VPN</h1>
+  <span class="who" id="who"></span>
+  <span class="spacer"></span>
+  <button id="logout" class="action" style="display:none">Déconnexion</button>
+</header>
+
+<main>
+  <section id="auth" class="panel">
+    <div class="tabs">
+      <button class="link" id="tab-login" aria-selected="true">Connexion</button>
+      <button class="link" id="tab-register" aria-selected="false">Créer un compte</button>
+    </div>
+    <input type="email" id="email" placeholder="adresse e-mail" autocomplete="username">
+    <input type="password" id="password" placeholder="mot de passe (8 caractères min.)" autocomplete="current-password">
+    <input type="text" id="invite" placeholder="code d'invitation (ominv-…)" style="display:none" autocomplete="off">
+    <button class="primary" id="submit">Se connecter</button>
+    <div class="msg err" id="autherr"></div>
+    <p class="muted" id="invitehint" style="display:none;font-size:.85rem">
+      L'inscription requiert un code d'invitation fourni par l'administrateur du réseau.</p>
+  </section>
+
+  <div id="app" style="display:none">
+    <section class="panel">
+      <h2>Mes machines</h2>
+      <table>
+        <thead><tr><th>État</th><th>Machine</th><th>IP</th><th>Dernière activité</th><th></th></tr></thead>
+        <tbody id="machines"></tbody>
+      </table>
+      <p class="muted" id="nomachines" style="display:none">Aucune machine pour l'instant — connectez-en une ci-dessous.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Connecter une machine</h2>
+      <p class="muted">Génère une clé d'enrôlement à votre nom (valable 24 h) et la commande à lancer sur la machine.</p>
+      <label style="display:block;margin-bottom:.5rem"><input type="checkbox" id="reusable" style="width:auto;margin:0 .4rem 0 0"> clé réutilisable (plusieurs machines)</label>
+      <button class="primary" id="genkey">Générer la clé et les commandes</button>
+      <div id="install" style="display:none">
+        <div class="oschoice">
+          <button data-os="linux" class="sel">Linux</button>
+          <button data-os="macos">macOS</button>
+          <button data-os="windows">Windows</button>
+        </div>
+        <pre id="cmd"></pre>
+        <p class="muted" style="font-size:.85rem">La machine apparaîtra ci-dessus, rattachée à votre compte.</p>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let MODE = "login";
+let AUTHKEY = "";
+let OS = "linux";
+const SERVER = location.origin;
+let refreshTimer = null;
+
+async function api(method, path, body) {
+  const resp = await fetch(path, {
+    method,
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = resp.status === 204 ? {} : await resp.json().catch(() => ({}));
+  if (!resp.ok) { const e = new Error(data.error || ("HTTP " + resp.status)); e.status = resp.status; throw e; }
+  return data;
+}
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function fmtDate(s) {
+  if (!s) return "—";
+  const d = new Date(s);
+  return d.getTime() <= 0 ? "jamais" : d.toLocaleString("fr-FR");
+}
+
+function setMode(m) {
+  MODE = m;
+  $("tab-login").setAttribute("aria-selected", m === "login");
+  $("tab-register").setAttribute("aria-selected", m === "register");
+  $("submit").textContent = m === "login" ? "Se connecter" : "Créer mon compte";
+  const needInvite = m === "register" && REGISTRATION === "invite";
+  $("invite").style.display = needInvite ? "block" : "none";
+  $("invitehint").style.display = needInvite ? "block" : "none";
+  $("password").autocomplete = m === "login" ? "current-password" : "new-password";
+}
+$("tab-login").onclick = () => setMode("login");
+$("tab-register").onclick = () => setMode("register");
+
+let REGISTRATION = "invite";
+api("GET", "/api/v1/users/config").then(c => { REGISTRATION = c.registration; setMode(MODE); }).catch(() => {});
+
+$("submit").onclick = async () => {
+  try {
+    const body = { email: $("email").value.trim(), password: $("password").value };
+    if (MODE === "register") body.invite = $("invite").value.trim();
+    const u = await api("POST", MODE === "login" ? "/api/v1/users/login" : "/api/v1/users/register", body);
+    show(true, u.email);
+  } catch (e) { $("autherr").textContent = e.message; $("autherr").className = "msg err"; }
+};
+$("password").addEventListener("keydown", e => { if (e.key === "Enter") $("submit").click(); });
+$("logout").onclick = async () => { await api("POST", "/api/v1/users/logout").catch(() => {}); show(false); };
+
+async function loadMe() {
+  const me = await api("GET", "/api/v1/users/me");
+  $("who").textContent = me.email;
+  const machines = me.machines || [];
+  $("nomachines").style.display = machines.length ? "none" : "block";
+  $("machines").innerHTML = machines.map(m => `
+    <tr>
+      <td><span class="dot ${m.online ? "on" : "off"}"></span>${m.online ? "en ligne" : "hors ligne"}</td>
+      <td>${esc(m.hostname)}</td>
+      <td><code>${esc(m.ip)}</code></td>
+      <td>${fmtDate(m.last_seen)}</td>
+      <td><button class="action" data-revoke="${esc(m.ip)}" data-name="${esc(m.hostname)}">retirer</button></td>
+    </tr>`).join("");
+  document.querySelectorAll("[data-revoke]").forEach(btn => btn.onclick = async () => {
+    if (!confirm(`Retirer « ${btn.dataset.name} » (${btn.dataset.revoke}) du réseau ?`)) return;
+    try { await api("DELETE", "/api/v1/users/devices/" + encodeURIComponent(btn.dataset.revoke)); loadMe(); }
+    catch (e) { alert(e.message); }
+  });
+  return me.email;
+}
+
+function commands() {
+  switch (OS) {
+    case "linux": return `curl -fsSL https://raw.githubusercontent.com/jeanbaptisteboitel-boop/omniup-vpn/main/scripts/install-omnid.sh \\
+  | sudo sh -s -- --server ${SERVER} --auth-key ${AUTHKEY}`;
+    case "macos": return `curl -fsSL https://raw.githubusercontent.com/jeanbaptisteboitel-boop/omniup-vpn/main/scripts/install-omnid-macos.sh \\
+  | sudo sh -s -- --server ${SERVER} --auth-key ${AUTHKEY}`;
+    case "windows": return `# dans un PowerShell administrateur :
+iwr -useb https://raw.githubusercontent.com/jeanbaptisteboitel-boop/omniup-vpn/main/scripts/install-omnid.ps1 -OutFile "$env:TEMP\\install-omnid.ps1"
+& "$env:TEMP\\install-omnid.ps1" -Server ${SERVER} -AuthKey ${AUTHKEY}`;
+  }
+}
+document.querySelectorAll(".oschoice button").forEach(b => b.onclick = () => {
+  OS = b.dataset.os;
+  document.querySelectorAll(".oschoice button").forEach(x => x.classList.toggle("sel", x === b));
+  $("cmd").textContent = commands();
+});
+
+$("genkey").onclick = async () => {
+  try {
+    const k = await api("POST", "/api/v1/users/authkeys?reusable=" + $("reusable").checked);
+    AUTHKEY = k.key;
+    $("install").style.display = "block";
+    $("cmd").textContent = commands();
+  } catch (e) { alert(e.message); }
+};
+
+function show(logged, email) {
+  $("auth").style.display = logged ? "none" : "block";
+  $("app").style.display = logged ? "block" : "none";
+  $("logout").style.display = logged ? "inline-block" : "none";
+  $("who").textContent = logged ? (email || "") : "";
+  clearInterval(refreshTimer);
+  if (logged) { loadMe().catch(() => show(false)); refreshTimer = setInterval(() => loadMe().catch(() => {}), 10000); }
+}
+
+api("GET", "/api/v1/users/me").then(me => show(true, me.email)).catch(() => show(false));
+</script>
+</body>
+</html>

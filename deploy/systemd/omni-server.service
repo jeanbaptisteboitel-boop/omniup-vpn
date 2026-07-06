@@ -1,0 +1,36 @@
+# Serveur de coordination OmniUp VPN.
+#
+# Installation :
+#   sudo cp omni-server /usr/local/bin/
+#   sudo cp deploy/systemd/omni-server.service /etc/systemd/system/
+#   sudo systemctl enable --now omni-server
+#
+# Options supplémentaires (TLS, plage, ports STUN/relais) dans
+# /etc/default/omni-server, variable OPTIONS.
+
+[Unit]
+Description=OmniUp VPN — serveur de coordination
+Documentation=https://github.com/jeanbaptisteboitel-boop/omniup-vpn
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=omniup-server
+EnvironmentFile=-/etc/default/omni-server
+ExecStart=/usr/local/bin/omni-server serve --state /var/lib/omniup-server/server.json $OPTIONS
+Restart=on-failure
+RestartSec=3
+
+# Durcissement
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OmniUp VPN — administration</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1a1d21; --muted: #6b7280;
+    --border: #e3e6ea; --accent: #2563eb; --ok: #16a34a; --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101317; --panel: #181c22; --text: #e5e7eb; --muted: #9ca3af;
+      --border: #2a2f37; --accent: #60a5fa; --ok: #4ade80; --bad: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: baseline; gap: 1rem; padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
+  header h1 { font-size: 1.1rem; margin: 0; }
+  header .info { color: var(--muted); font-size: .85rem; }
+  header .spacer { flex: 1; }
+  main { max-width: 60rem; margin: 0 auto; padding: 1.5rem; }
+  nav { display: flex; gap: .5rem; margin-bottom: 1rem; }
+  nav button { padding: .45rem .9rem; border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: .5rem; cursor: pointer; font-size: .9rem; }
+  nav button.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  section.panel { background: var(--panel); border: 1px solid var(--border); border-radius: .75rem; padding: 1rem 1.25rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em; }
+  tr:last-child td { border-bottom: none; }
+  .dot { display: inline-block; width: .6rem; height: .6rem; border-radius: 50%; margin-right: .4rem; }
+  .on  { background: var(--ok); } .off { background: var(--muted); }
+  code { font-family: ui-monospace, monospace; font-size: .85em; }
+  button.action { padding: .3rem .7rem; border-radius: .4rem; border: 1px solid var(--border); background: transparent; color: var(--bad); cursor: pointer; }
+  button.primary { padding: .45rem 1rem; border-radius: .5rem; border: none; background: var(--accent); color: #fff; cursor: pointer; font-weight: 600; }
+  input, select, textarea { padding: .45rem .6rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--bg); color: var(--text); font: inherit; }
+  textarea { width: 100%; min-height: 12rem; font-family: ui-monospace, monospace; font-size: .85rem; }
+  .row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+  .msg { margin: .75rem 0; padding: .6rem .9rem; border-radius: .5rem; font-size: .9rem; display: none; }
+  .msg.err { display: block; background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad); }
+  .msg.ok  { display: block; background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok); }
+  .newkey { font-family: ui-monospace, monospace; word-break: break-all; padding: .75rem; background: var(--bg); border: 1px dashed var(--accent); border-radius: .5rem; margin: .75rem 0; }
+  #login { max-width: 26rem; margin: 4rem auto; }
+  #login input { width: 100%; margin-bottom: .75rem; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>OmniUp VPN</h1>
+  <span class="info" id="netinfo"></span>
+  <span class="spacer"></span>
+  <button id="logout" style="display:none" class="action">Déconnexion</button>
+</header>
+
+<main>
+  <section id="login" class="panel">
+    <h2>Console d'administration</h2>
+    <p class="muted">Saisissez la clé admin affichée au premier démarrage du serveur (<code>omadmin-…</code>).</p>
+    <input type="password" id="adminkey" placeholder="omadmin-…" autocomplete="off">
+    <button class="primary" id="loginbtn">Se connecter</button>
+    <div class="msg err" id="loginerr"></div>
+  </section>
+
+  <div id="app" style="display:none">
+    <nav>
+      <button data-tab="machines" class="active">Machines</button>
+      <button data-tab="keys">Clés d'enrôlement</button>
+      <button data-tab="acl">ACLs</button>
+    </nav>
+
+    <section class="panel" id="tab-machines">
+      <table>
+        <thead><tr><th>État</th><th>Machine</th><th>Propriétaire</th><th>IP</th><th>Endpoint</th><th>Dernière activité</th><th></th></tr></thead>
+        <tbody id="devices"></tbody>
+      </table>
+      <p class="muted" id="nodevices" style="display:none">Aucune machine enrôlée. Créez une clé dans l'onglet « Clés d'enrôlement ».</p>
+    </section>
+
+    <section class="panel" id="tab-keys" style="display:none">
+      <div class="row">
+        <label><input type="checkbox" id="reusable"> réutilisable</label>
+        <select id="expiry">
+          <option value="24h" selected>expire dans 24 h</option>
+          <option value="168h">expire dans 7 jours</option>
+          <option value="720h">expire dans 30 jours</option>
+          <option value="0">sans expiration</option>
+        </select>
+        <button class="primary" id="genkey">Créer une clé</button>
+      </div>
+      <div class="newkey" id="newkey" style="display:none"></div>
+      <table>
+        <thead><tr><th>Clé</th><th>Type</th><th>Statut</th><th>Créée</th><th>Expire</th></tr></thead>
+        <tbody id="keys"></tbody>
+      </table>
+    </section>
+
+    <section class="panel" id="tab-acl" style="display:none">
+      <p class="muted">Sans règle, tout le monde communique avec tout le monde. Chaque règle autorise <code>src → dst</code> (noms de machines, IP ou <code>*</code>).</p>
+      <textarea id="acltext" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:.75rem">
+        <button class="primary" id="aclsave">Appliquer</button>
+        <button id="aclreload" class="action" style="color:var(--text)">Recharger</button>
+      </div>
+      <div class="msg" id="aclmsg"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let KEY = localStorage.getItem("omniup_admin_key") || "";
+let refreshTimer = null;
+
+async function api(method, path, body) {
+  const resp = await fetch(path, {
+    method,
+    headers: { "Authorization": "Bearer " + KEY, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (resp.status === 401) { logout(); throw new Error("clé admin invalide"); }
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+  return data;
+}
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function fmtDate(s) {
+  if (!s) return "—";
+  const d = new Date(s);
+  return d.getTime() <= 0 ? "jamais" : d.toLocaleString("fr-FR");
+}
+
+async function loadInfo() {
+  const info = await api("GET", "/api/v1/info");
+  $("netinfo").textContent = `réseau ${info.cidr} · ${info.online_count}/${info.device_count} machine(s) en ligne`;
+}
+
+async function loadDevices() {
+  const devices = await api("GET", "/api/v1/devices");
+  $("nodevices").style.display = devices.length ? "none" : "block";
+  $("devices").innerHTML = devices.map(d => `
+    <tr>
+      <td><span class="dot ${d.online ? "on" : "off"}"></span>${d.online ? "en ligne" : "hors ligne"}</td>
+      <td>${esc(d.hostname)}</td>
+      <td class="muted">${esc(d.owner || "clé d'enrôlement")}</td>
+      <td><code>${esc(d.ip)}</code></td>
+      <td><code>${esc(d.endpoint || "—")}</code></td>
+      <td>${fmtDate(d.last_seen)}</td>
+      <td><button class="action" data-revoke="${esc(d.ip)}" data-name="${esc(d.hostname)}">révoquer</button></td>
+    </tr>`).join("");
+  document.querySelectorAll("[data-revoke]").forEach(btn => btn.onclick = async () => {
+    if (!confirm(`Révoquer « ${btn.dataset.name} » (${btn.dataset.revoke}) ? La machine sera exclue du réseau.`)) return;
+    try { await api("DELETE", "/api/v1/devices/" + encodeURIComponent(btn.dataset.revoke)); refresh(); }
+    catch (e) { alert(e.message); }
+  });
+}
+
+async function loadKeys() {
+  const keys = await api("GET", "/api/v1/authkeys");
+  $("keys").innerHTML = keys.slice().reverse().map(k => `
+    <tr>
+      <td><code>${esc(k.key_masked)}</code></td>
+      <td>${k.reusable ? "réutilisable" : "usage unique"}</td>
+      <td>${k.used && !k.reusable ? "utilisée" : (k.expires_at && new Date(k.expires_at) < new Date() ? "expirée" : "valide")}</td>
+      <td>${fmtDate(k.created_at)}</td>
+      <td>${k.expires_at ? fmtDate(k.expires_at) : "jamais"}</td>
+    </tr>`).join("");
+}
+
+async function loadACL() {
+  const acl = await api("GET", "/api/v1/acl");
+  $("acltext").value = JSON.stringify(acl.rules && acl.rules.length ? acl : { rules: [] }, null, 2);
+}
+
+function showMsg(el, text, ok) {
+  el.textContent = text;
+  el.className = "msg " + (ok ? "ok" : "err");
+  setTimeout(() => { el.className = "msg"; }, 5000);
+}
+
+async function refresh() {
+  try { await Promise.all([loadInfo(), loadDevices(), loadKeys()]); }
+  catch (e) { /* la déconnexion est gérée dans api() */ }
+}
+
+function show(logged) {
+  $("login").style.display = logged ? "none" : "block";
+  $("app").style.display = logged ? "block" : "none";
+  $("logout").style.display = logged ? "inline-block" : "none";
+  clearInterval(refreshTimer);
+  if (logged) { refresh(); loadACL(); refreshTimer = setInterval(refresh, 10000); }
+}
+
+function logout() {
+  KEY = ""; localStorage.removeItem("omniup_admin_key"); show(false);
+}
+
+$("loginbtn").onclick = async () => {
+  KEY = $("adminkey").value.trim();
+  try {
+    await api("GET", "/api/v1/info");
+    localStorage.setItem("omniup_admin_key", KEY);
+    show(true);
+  } catch (e) { $("loginerr").textContent = e.message; $("loginerr").className = "msg err"; }
+};
+$("adminkey").addEventListener("keydown", e => { if (e.key === "Enter") $("loginbtn").click(); });
+$("logout").onclick = logout;
+
+document.querySelectorAll("nav button").forEach(btn => btn.onclick = () => {
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b === btn));
+  ["machines", "keys", "acl"].forEach(t => $("tab-" + t).style.display = (t === btn.dataset.tab) ? "block" : "none");
+});
+
+$("genkey").onclick = async () => {
+  try {
+    const params = new URLSearchParams({ reusable: $("reusable").checked, ttl: $("expiry").value });
+    const k = await api("POST", "/api/v1/authkeys?" + params);
+    $("newkey").style.display = "block";
+    $("newkey").textContent = k.key + "   ← copiez cette clé, elle ne sera plus affichée en clair";
+    loadKeys();
+  } catch (e) { alert(e.message); }
+};
+
+$("aclsave").onclick = async () => {
+  let policy;
+  try { policy = JSON.parse($("acltext").value); }
+  catch (e) { showMsg($("aclmsg"), "JSON invalide : " + e.message, false); return; }
+  try {
+    await api("PUT", "/api/v1/acl", policy);
+    showMsg($("aclmsg"), "Politique appliquée.", true);
+  } catch (e) { showMsg($("aclmsg"), e.message, false); }
+};
+$("aclreload").onclick = () => loadACL().catch(e => showMsg($("aclmsg"), e.message, false));
+
+if (KEY) { api("GET", "/api/v1/info").then(() => show(true)).catch(() => show(false)); }
+else show(false);
+</script>
+</body>
+</html>

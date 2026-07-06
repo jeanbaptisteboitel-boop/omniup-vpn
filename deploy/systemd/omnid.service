@@ -1,0 +1,33 @@
+# Agent OmniUp VPN.
+#
+# Installation :
+#   sudo cp omnid /usr/local/bin/
+#   sudo cp deploy/systemd/omnid.service /etc/systemd/system/
+#   # premier enrôlement (une fois) :
+#   sudo omnid up --server https://vpn.example.com --auth-key omkey-…
+#   # puis (l'identité est persistée, plus besoin de clé) :
+#   sudo systemctl enable --now omnid
+#
+# Options supplémentaires (--iface, --port, --dns…) dans
+# /etc/default/omnid, variable OPTIONS.
+
+[Unit]
+Description=OmniUp VPN — agent
+Documentation=https://github.com/jeanbaptisteboitel-boop/omniup-vpn
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/omnid
+ExecStart=/usr/local/bin/omnid up $OPTIONS
+Restart=on-failure
+RestartSec=5
+
+# L'agent a besoin de root : création du TUN, adressage netlink,
+# écoute DNS sur l'adresse overlay.
+DeviceAllow=/dev/net/tun rw
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

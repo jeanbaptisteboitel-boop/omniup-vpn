@@ -1,0 +1,28 @@
+# Paquet du serveur de coordination OmniUp VPN (.deb / .rpm).
+# Build : nfpm package -f packaging/omni-server.nfpm.yaml -p deb -t dist/
+name: omni-server
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: net
+priority: optional
+maintainer: OmniUp <noreply@omniup.fr>
+description: |
+  Serveur de coordination OmniUp VPN (plan de contrôle).
+  Enrôle les machines, attribue les adresses du réseau overlay, distribue
+  la carte des pairs, et héberge le STUN et le relais de secours.
+homepage: https://github.com/jeanbaptisteboitel-boop/omniup-vpn
+license: MIT
+contents:
+  - src: ./dist/omni-server.pkgbin
+    dst: /usr/bin/omni-server
+    file_info:
+      mode: 0755
+  - src: ./deploy/systemd/omni-server.service
+    dst: /lib/systemd/system/omni-server.service
+  - src: ./packaging/omni-server.default
+    dst: /etc/default/omni-server
+    type: config|noreplace
+scripts:
+  postinstall: ./packaging/postinstall-server.sh
+  preremove: ./packaging/preremove-server.sh

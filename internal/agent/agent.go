@@ -1,0 +1,419 @@
+// Package agent implémente la logique du démon omnid : enregistrement
+// auprès du serveur de coordination, moteur WireGuard userspace avec
+// socket magique (STUN + perçage NAT), et synchronisation périodique
+// des pairs.
+package agent
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/dnssrv"
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/omnisock"
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/types"
+	"github.com/jeanbaptisteboitel-boop/omniup-vpn/internal/wgnet"
+)
+
+// PollInterval : fréquence de synchronisation avec le serveur de coordination.
+const PollInterval = 10 * time.Second
+
+// stunRefresh : fréquence de redécouverte de notre endpoint public.
+const stunRefresh = 25 * time.Second
+
+// Options configure le démarrage de l'agent.
+type Options struct {
+	ServerURL   string
+	AuthKey     string
+	Hostname    string
+	Iface       string
+	ListenPort  int
+	MTU         int
+	StatePath   string
+	STUNServers []string // vide : déduit du serveur de coordination
+	RelayServer string   // vide : déduit du serveur de coordination ; "off" : désactivé
+	DNS         bool     // activer le DNS interne sur l'adresse overlay
+	DNSZone     string   // zone interne, ex: "omni"
+
+	// Subnet routing / exit node.
+	AdvertiseRoutes   []string // sous-réseaux proposés (approbation admin requise)
+	AdvertiseExitNode bool     // proposer de router tout Internet (0.0.0.0/0)
+	ExitNode          string   // router tout notre trafic via ce pair (IP ou nom)
+	AcceptRoutes      bool     // installer les routes des pairs (défaut : oui)
+}
+
+// Up enregistre la machine si nécessaire, démarre le moteur WireGuard
+// userspace et boucle jusqu'à annulation du contexte : synchronisation des
+// pairs, découverte STUN et perçage NAT.
+func Up(ctx context.Context, opts Options) error {
+	st, err := LoadState(opts.StatePath)
+	if err != nil {
+		return fmt.Errorf("lecture de l'état: %w", err)
+	}
+
+	if st == nil {
+		if opts.ServerURL == "" {
+			return fmt.Errorf("première connexion : --server est requis")
+		}
+		priv, err := wgtypes.GeneratePrivateKey()
+		if err != nil {
+			return err
+		}
+		c := NewClient(opts.ServerURL, "")
+		var reg *types.RegisterResponse
+		if opts.AuthKey != "" {
+			reg, err = c.Register(opts.AuthKey, opts.Hostname, priv.PublicKey().String())
+			if err != nil {
+				return fmt.Errorf("enregistrement: %w", err)
+			}
+		} else {
+			// Pas de clé : enrôlement SSO — l'utilisateur s'authentifie
+			// dans un navigateur pendant que l'agent attend.
+			reg, err = enrollSSO(ctx, c, opts.Hostname, priv.PublicKey().String())
+			if err != nil {
+				return err
+			}
+		}
+		st = &State{
+			ServerURL:   c.ServerURL,
+			PrivateKey:  priv.String(),
+			DeviceID:    reg.DeviceID,
+			DeviceToken: reg.DeviceToken,
+			IP:          reg.IP,
+			CIDR:        reg.CIDR,
+			Iface:       opts.Iface,
+			ListenPort:  opts.ListenPort,
+		}
+		if err := st.Save(opts.StatePath); err != nil {
+			return fmt.Errorf("sauvegarde de l'état: %w", err)
+		}
+		log.Printf("machine enregistrée, adresse attribuée: %s", st.IP)
+	} else {
+		log.Printf("identité existante chargée: %s (%s)", st.IP, st.Iface)
+	}
+
+	priv, err := wgtypes.ParseKey(st.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("clé privée corrompue dans l'état: %w", err)
+	}
+
+	mtu := opts.MTU
+	if mtu == 0 {
+		mtu = wgnet.DefaultMTU
+	}
+	bind := omnisock.New()
+	dev, err := wgnet.Start(st.Iface, mtu, priv, st.ListenPort, bind)
+	if err != nil {
+		return err
+	}
+	defer dev.Close()
+	if err := dev.SetAddress(st.IP, st.CIDR); err != nil {
+		return err
+	}
+	log.Printf("interface %s active (%s), moteur WireGuard userspace, port %d",
+		dev.Name, st.IP, bind.LocalPort())
+
+	// Sur macOS le système attribue le nom réel (utun4…) : on le persiste
+	// pour que « omnid status » interroge la bonne interface.
+	if st.Iface != dev.Name {
+		st.Iface = dev.Name
+		if err := st.Save(opts.StatePath); err != nil {
+			log.Printf("sauvegarde du nom d'interface: %v", err)
+		}
+	}
+
+	writePidFile(opts.StatePath)
+	defer removePidFile(opts.StatePath)
+
+	stunServers := opts.STUNServers
+	if len(stunServers) == 0 {
+		if srv := DefaultSTUNServer(st.ServerURL); srv != "" {
+			stunServers = []string{srv}
+		}
+	}
+
+	// Relais de secours : configuré sur la socket, utilisé par le
+	// gestionnaire d'endpoints quand le perçage direct échoue.
+	relayServer := opts.RelayServer
+	if relayServer == "" {
+		relayServer = DefaultRelayServer(st.ServerURL)
+	}
+	relayEnabled := false
+	if relayServer != "" && relayServer != "off" {
+		if udpAddr, err := net.ResolveUDPAddr("udp4", relayServer); err == nil {
+			ap := udpAddr.AddrPort()
+			if err := bind.ConfigureRelay(netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), [32]byte(priv)); err != nil {
+				log.Printf("relais de secours indisponible (%v)", err)
+			} else {
+				relayEnabled = true
+				log.Printf("relais de secours: %s", relayServer)
+			}
+		} else {
+			log.Printf("relais de secours indisponible (%v)", err)
+		}
+	}
+
+	// DNS interne : résout <machine>.<zone> vers les adresses overlay.
+	var dnsSrv *dnssrv.Server
+	if opts.DNS {
+		dnsSrv = dnssrv.New(opts.DNSZone)
+		addr := net.JoinHostPort(st.IP, "53")
+		go func() {
+			if err := dnsSrv.ListenAndServe(ctx, addr); err != nil && ctx.Err() == nil {
+				log.Printf("dns interne désactivé (%v)", err)
+			}
+		}()
+		log.Printf("dns interne sur %s (zone %s)", addr, dnsSrv.Zone())
+	}
+
+	// Rôle routeur : routes annoncées (l'admin devra les approuver).
+	advertised, myRoutes, err := advertisedRoutes(opts)
+	if err != nil {
+		return err
+	}
+	if len(advertised) > 0 {
+		log.Printf("routes annoncées: %v (en attente d'approbation par l'administrateur)", advertised)
+		if err := enableForwarding(dev.Name, st.CIDR); err != nil {
+			log.Printf("attention, transfert IP incomplet: %v", err)
+		}
+	}
+
+	// Mode exit node : tout notre trafic part via ce pair — policy
+	// routing par fwmark, et trafic de contrôle marqué pour l'éviter.
+	if opts.ExitNode != "" {
+		if err := dev.EnableExitNode(); err != nil {
+			return fmt.Errorf("exit node: %w", err)
+		}
+		defer dev.DisableExitNode()
+		log.Printf("exit node demandé: %s (tout le trafic Internet passera par ce pair)", opts.ExitNode)
+	}
+
+	mgr := NewEndpointManager(dev, bind)
+	client := NewClient(st.ServerURL, st.DeviceToken)
+	if opts.ExitNode != "" {
+		if h := markedHTTPClient(); h != nil {
+			client.SetHTTPClient(h)
+		}
+	}
+	knownPeers := map[string]bool{}
+	var myEndpoints []string
+	var lastSTUN time.Time
+	exitPeerSeen := true
+
+	sync := func() {
+		// 0. Maintien de l'enregistrement auprès du relais de secours.
+		if relayEnabled {
+			if err := bind.RelayRegister(); err != nil {
+				log.Printf("relais: %v", err)
+			}
+			mgr.SetRelayAvailable(bind.RelayHealthy())
+		}
+
+		// 1. Redécouverte périodique de notre endpoint public (STUN).
+		if time.Since(lastSTUN) > stunRefresh {
+			if eps := DiscoverEndpoints(ctx, bind, stunServers, dev.Name); len(eps) > 0 {
+				if len(eps) > 0 && (len(myEndpoints) == 0 || eps[0] != myEndpoints[0]) {
+					log.Printf("endpoints locaux: %v", eps)
+				}
+				myEndpoints = eps
+			}
+			lastSTUN = time.Now()
+		}
+
+		// 2. Heartbeat + carte du réseau.
+		nm, err := client.Poll(types.PollRequest{
+			ListenPort:       st.ListenPort,
+			Endpoints:        myEndpoints,
+			AdvertisedRoutes: advertised,
+		})
+		if err != nil {
+			log.Printf("poll: %v", err)
+			return
+		}
+
+		// 2 bis. Rotation du jeton machine décidée par le serveur.
+		if nm.NewToken != "" {
+			st.DeviceToken = nm.NewToken
+			client.Token = nm.NewToken
+			if err := st.Save(opts.StatePath); err != nil {
+				log.Printf("sauvegarde du nouveau jeton: %v", err)
+			} else {
+				log.Printf("jeton machine renouvelé par le serveur")
+			}
+		}
+
+		// 3. Filtrage des routes des pairs : 0.0.0.0/0 seulement pour
+		// l'exit node choisi, sous-réseaux seulement si acceptés, et
+		// jamais nos propres routes.
+		peers, subnetRoutes, exitFound := filterRoutes(nm.Peers, opts, myRoutes)
+		if opts.ExitNode != "" && exitFound != exitPeerSeen {
+			exitPeerSeen = exitFound
+			if exitFound {
+				log.Printf("exit node %s actif", opts.ExitNode)
+			} else {
+				log.Printf("attention : exit node %s introuvable ou sans route 0.0.0.0/0 approuvée — trafic Internet coupé", opts.ExitNode)
+			}
+		}
+
+		// 4. Synchronisation des pairs (sans toucher aux endpoints établis).
+		if err := dev.SyncPeers(peers, knownPeers, InitialEndpoint); err != nil {
+			log.Printf("synchronisation wireguard: %v", err)
+			return
+		}
+
+		// 5. Routes système des sous-réseaux acceptés.
+		if opts.AcceptRoutes {
+			if err := dev.SetRoutes(subnetRoutes); err != nil {
+				log.Printf("routes: %v", err)
+			}
+		}
+
+		// 6. Perçage NAT pour les pairs sans chemin actif.
+		mgr.Observe(nm.Peers)
+		mgr.Probe()
+
+		if dnsSrv != nil {
+			dnsSrv.Update(nm)
+		}
+		logNetMapChange(nm)
+	}
+
+	sync()
+	ticker := time.NewTicker(PollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("arrêt de l'agent — l'interface %s disparaît avec le démon", dev.Name)
+			return nil
+		case <-ticker.C:
+			sync()
+		}
+	}
+}
+
+// advertisedRoutes valide et canonise les routes annoncées via les
+// options ; myRoutes permet de ne jamais réinstaller ses propres routes.
+func advertisedRoutes(opts Options) (advertised []string, myRoutes map[string]bool, err error) {
+	myRoutes = map[string]bool{}
+	all := append([]string(nil), opts.AdvertiseRoutes...)
+	if opts.AdvertiseExitNode {
+		all = append(all, "0.0.0.0/0")
+	}
+	for _, r := range all {
+		p, perr := netip.ParsePrefix(strings.TrimSpace(r))
+		if perr != nil {
+			return nil, nil, fmt.Errorf("route annoncée invalide %q: %w", r, perr)
+		}
+		c := p.Masked().String()
+		if !myRoutes[c] {
+			myRoutes[c] = true
+			advertised = append(advertised, c)
+		}
+	}
+	return advertised, myRoutes, nil
+}
+
+// filterRoutes prépare les routes des pairs pour WireGuard et le système :
+// renvoie les pairs avec leurs routes filtrées, la liste des sous-réseaux
+// à installer, et si l'exit node demandé a été trouvé (avec 0.0.0.0/0).
+func filterRoutes(in []types.Peer, opts Options, myRoutes map[string]bool) ([]types.Peer, []string, bool) {
+	peers := make([]types.Peer, len(in))
+	var subnets []string
+	seen := map[string]bool{}
+	exitFound := false
+	for i, p := range in {
+		cp := p
+		var keep []string
+		isExit := opts.ExitNode != "" && (p.IP == opts.ExitNode || p.Hostname == opts.ExitNode)
+		for _, r := range p.Routes {
+			if r == "0.0.0.0/0" {
+				if isExit {
+					keep = append(keep, r)
+					exitFound = true
+				}
+				continue
+			}
+			if !opts.AcceptRoutes || myRoutes[r] {
+				continue
+			}
+			keep = append(keep, r)
+			if !seen[r] {
+				seen[r] = true
+				subnets = append(subnets, r)
+			}
+		}
+		cp.Routes = keep
+		peers[i] = cp
+	}
+	return peers, subnets, exitFound
+}
+
+// enrollSSO déroule l'enrôlement par navigateur : affiche l'URL et sonde
+// le serveur jusqu'à l'authentification (ou l'expiration, ~15 min).
+func enrollSSO(ctx context.Context, c *Client, hostname, publicKey string) (*types.RegisterResponse, error) {
+	start, err := c.EnrollStart(hostname, publicKey)
+	if err != nil {
+		return nil, fmt.Errorf("enrôlement SSO impossible (%w) — utilisez --auth-key si le serveur n'a pas de SSO", err)
+	}
+	log.Printf("Pour connecter cette machine, ouvrez cette URL dans un navigateur :")
+	log.Printf("")
+	log.Printf("    %s", start.AuthURL)
+	log.Printf("")
+	log.Printf("(en attente d'authentification…)")
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+			reg, pending, err := c.EnrollWait(start.SessionID)
+			if err != nil {
+				return nil, fmt.Errorf("enrôlement SSO: %w", err)
+			}
+			if pending {
+				continue
+			}
+			return reg, nil
+		}
+	}
+}
+
+var lastPeerCount = -1
+
+func logNetMapChange(nm *types.NetMap) {
+	online := 0
+	for _, p := range nm.Peers {
+		if p.Online {
+			online++
+		}
+	}
+	if len(nm.Peers) != lastPeerCount {
+		log.Printf("carte du réseau: %d pair(s), %d en ligne", len(nm.Peers), online)
+		lastPeerCount = len(nm.Peers)
+	}
+}
+
+// PidFilePath donne le chemin du fichier pid associé à un fichier d'état.
+func PidFilePath(statePath string) string {
+	return filepath.Join(filepath.Dir(statePath), "omnid.pid")
+}
+
+func writePidFile(statePath string) {
+	_ = os.WriteFile(PidFilePath(statePath), []byte(strconv.Itoa(os.Getpid())), 0o644)
+}
+
+func removePidFile(statePath string) {
+	_ = os.Remove(PidFilePath(statePath))
+}
